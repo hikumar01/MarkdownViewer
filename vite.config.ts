@@ -8,7 +8,7 @@ export default defineConfig({
     strictPort: true,
     watch: {
       // Vite does not need to watch the Rust source tree — Tauri CLI handles that
-      ignored: ['**/src-tauri/**'],
+      ignored: ['**/app/**'],
     },
   },
   envPrefix: ['VITE_', 'TAURI_ENV_*'],

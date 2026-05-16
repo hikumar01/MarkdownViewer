@@ -1,19 +1,13 @@
 :root {
   --bg: #ffffff;
-  --bg-overlay: rgba(0, 120, 255, 0.15);
   --text-muted: #6e7681;
   --border: #d0d7de;
-  --btn-bg: #0969da;
-  --btn-text: #ffffff;
 }
 
 html.dark {
   --bg: #0d1117;
-  --bg-overlay: rgba(0, 120, 255, 0.25);
   --text-muted: #8b949e;
   --border: #30363d;
-  --btn-bg: #1f6feb;
-  --btn-text: #ffffff;
 }
 
 * {
@@ -44,7 +38,7 @@ body {
   width: 100%;
 }
 
-#welcome {
+#welcome:not([hidden]) {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -62,43 +56,9 @@ body {
   color: var(--text-muted);
 }
 
-#welcome button#open-btn {
-  min-width: 180px;
-  padding: 0.5rem 1.25rem;
-  border-radius: 6px;
-  background: var(--btn-bg);
-  color: var(--btn-text);
-  border: none;
-  cursor: pointer;
-  font-size: 1rem;
-}
-
-#welcome button#open-btn:hover {
-  opacity: 0.85;
-}
-
 #welcome .hint {
   font-size: 0.85rem;
   color: var(--text-muted);
-}
-
-#drop-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg-overlay);
-  border: 3px dashed #0969da;
-  pointer-events: none;
-  font-size: 1.25rem;
-  font-weight: 500;
-  color: #0969da;
-}
-
-body.drag-over #drop-overlay {
-  display: flex;
 }
 
 .mermaid-error {
@@ -119,9 +79,18 @@ figure.mermaid-diagram {
   margin: 1rem 0;
 }
 
-/* Shiki dual-theme: activate the dark palette when html.dark is set.
-   The light palette is active by default via CSS custom properties emitted
-   per <span> by rehypeShiki (see ADR-003). */
+#content img {
+  display: block;
+  margin-inline: auto;
+  max-width: 100%;
+}
+
+#content svg {
+  display: block;
+  margin-inline: auto;
+}
+
+/* Shiki dual-theme: activate the dark palette when html.dark is set. */
 html.dark .shiki,
 html.dark .shiki span {
   color: var(--shiki-dark) !important;

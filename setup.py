@@ -48,8 +48,8 @@ def hdr(msg: str)  -> None: print(_c("1",  f"\n{msg}"))
 WINDOWS = platform.system() == "Windows"
 MACOS   = platform.system() == "Darwin"
 
-ROOT     = Path(__file__).resolve().parent
-SRC_TAURI = ROOT / "src-tauri"
+ROOT = Path(__file__).resolve().parent
+APP  = ROOT / "app"
 
 MIN_NODE_MAJOR = 18
 MIN_PNPM_MAJOR = 9
@@ -202,7 +202,7 @@ def pnpm_install() -> bool:
 
 def cargo_fetch() -> bool:
     hdr("Fetching Rust crates")
-    res = subprocess.run(["cargo", "fetch"], cwd=str(SRC_TAURI))
+    res = subprocess.run(["cargo", "fetch"], cwd=str(APP))
     if res.returncode != 0:
         fail("cargo fetch failed")
         return False

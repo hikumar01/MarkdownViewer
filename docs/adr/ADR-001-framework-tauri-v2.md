@@ -65,7 +65,7 @@ Tauri v2 introduces the **Capabilities security model** — a declarative allowl
 - Rust as the backend language for all file I/O, file watching, and platform integration
 - TypeScript as the frontend language for all rendering and UI logic
 - The Tauri plugin ecosystem for cross-cutting concerns (storage, window state, deep links, updates)
-- Tauri's Capabilities system for security — all frontend→backend API access must be declared in `src-tauri/capabilities/default.json`
+- Tauri's Capabilities system for security — all frontend→backend API access must be declared in `app/capabilities/default.json`
 - WebView rendering fidelity is tied to OS WebView versions (Safari on macOS, WebView2 on Windows) — test on both
 
 **Ruled out:**

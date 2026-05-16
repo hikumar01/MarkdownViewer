@@ -4,6 +4,24 @@ use tauri::Emitter;
 use crate::WatcherState;
 
 #[tauri::command]
+pub fn read_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_window_title(
+    window: tauri::WebviewWindow,
+    filename: String,
+) -> Result<(), String> {
+    let title = if filename.is_empty() {
+        "markview".to_string()
+    } else {
+        format!("{filename} \u{2014} markview")
+    };
+    window.set_title(&title).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn watch_file(
     path: String,
     window: tauri::WebviewWindow,
@@ -16,9 +34,7 @@ pub fn watch_file(
 
         match event.kind {
             EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
-                // A rename means the watched path no longer exists at its
-                // original name — treat this as a deletion from the watcher's
-                // point of view.
+                // A rename means the watched path no longer exists — treat as deletion.
                 let _ = window.emit("file-deleted", &path_for_watcher);
             }
             EventKind::Modify(_) => {
@@ -27,21 +43,15 @@ pub fn watch_file(
             EventKind::Remove(_) => {
                 let _ = window.emit("file-deleted", &path_for_watcher);
             }
-            // Access, Create, Other, Any — not relevant to a single-file viewer.
             _ => {}
         }
     })
     .map_err(|e| e.to_string())?;
 
-    // Replacing the previous watcher in state drops it, which automatically
-    // stops the previous watch. We intentionally support only one active watch
-    // at a time (single-file viewer per ADR-006 / Feature 6).
-    //
-    // The watcher MUST be stored in state: if it were a local variable it would
-    // be dropped when this function returns, stopping the watch immediately.
+    // Storing the watcher in state keeps it alive; dropping it stops the watch.
+    // Only one active watch at a time — replacing the previous watcher drops it.
     *state.0.lock().unwrap() = Some(watcher);
 
-    // Start the watch after storing — borrow the watcher back from state.
     state
         .0
         .lock()
@@ -54,7 +64,6 @@ pub fn watch_file(
 
 #[tauri::command]
 pub fn unwatch_file(state: tauri::State<'_, WatcherState>) -> Result<(), String> {
-    // Setting to None drops the watcher, which stops the watch automatically.
     *state.0.lock().unwrap() = None;
     Ok(())
 }

@@ -1,11 +1,10 @@
 {
   "$schema": "https://schema.tauri.app/config/2/capability.json",
   "identifier": "default",
-  "description": "Minimum permissions for markview. File I/O uses custom Rust commands (read_file, watch_file) rather than the fs plugin frontend API — so fs:* permissions are intentionally absent.",
+  "description": "Minimum permissions for markview. File I/O and the open-file dialog are handled in Rust (read_file, watch_file, native menu handler) — the frontend never calls the dialog or fs APIs directly.",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "dialog:allow-open",
     "window-state:allow-restore-state",
     "window-state:allow-save-window-state"
   ]

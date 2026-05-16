@@ -77,58 +77,58 @@ function resolveLocalPath(basePath: string, src: string): string {
   return resolved.join('/')
 }
 
-interface ResolveImagesOptions {
-  basePath: string
-}
-
+// WHY basePath comes from file.data rather than a plugin option: the processor
+// is built once and frozen (see below). Per-render state like basePath is
+// passed through VFile.data so the frozen processor can be shared across calls.
+//
 // WHY we rewrite to markview://: the custom protocol handler in Rust serves
 // local files securely. file:// would expose any local file path to untrusted
 // markdown content — markview:// applies canonicalization and is_file() guards
 // before serving any bytes (see protocol.rs).
-function rehypeResolveImages(options: ResolveImagesOptions): Plugin<[], HastRoot> {
-  return function () {
-    return (tree: HastRoot): void => {
-      visit(tree, 'element', (node: Element) => {
-        if (node.tagName !== 'img') return
-        const src = node.properties?.src
-        if (typeof src !== 'string' || src === '') return
-        if (isRemoteOrResolved(src)) return
-        node.properties.src = `markview://${resolveLocalPath(options.basePath, src)}`
-      })
-    }
+const rehypeResolveImages: Plugin<[], HastRoot> = () => {
+  return (tree: HastRoot, file): void => {
+    const basePath = (file.data['basePath'] as string | undefined) ?? ''
+    visit(tree, 'element', (node: Element) => {
+      if (node.tagName !== 'img') return
+      const src = node.properties?.src
+      if (typeof src !== 'string' || src === '') return
+      if (isRemoteOrResolved(src)) return
+      node.properties.src = `markview://${resolveLocalPath(basePath, src)}`
+    })
   }
 }
 
 // ---------------------------------------------------------------------------
-// buildPipeline / renderMarkdown
+// processor
 // ---------------------------------------------------------------------------
 
-export function buildPipeline(basePath: string) {
-  return unified()
-    .use(remarkParse)
-    .use(remarkGfm)
-    .use(remarkExtractMermaid)
-    // allowDangerousHtml: true lets raw `html` nodes from author-written HTML
-    // in markdown survive the mdast→hast conversion (required for P0 Feature 9 /
-    // P1 Feature 8 HTML passthrough). Mermaid blocks are now proper hast elements
-    // and are not affected by this flag.
-    .use(remarkRehype, { allowDangerousHtml: true })
-    .use(rehypeResolveImages({ basePath }))
-    // Sanitize BEFORE Shiki: Shiki runs on code elements that sanitize has
-    // already vetted. Shiki's style= output on <span> is unsanitized but
-    // intentionally allowed — sanitizeOptions adds 'style' to the allow-list
-    // specifically for this reason (see sanitize.ts).
-    .use(rehypeSanitize, sanitizeOptions)
-    // Dual-theme: emits CSS custom properties per <span> so switching themes
-    // is a CSS variable toggle with no code-block re-render (see ADR-003).
-    .use(rehypeShiki, { themes: { light: 'github-light', dark: 'github-dark' } })
-    // allowDangerousHtml: true serializes any surviving raw HAST nodes from
-    // user-authored HTML (already sanitized above).
-    .use(rehypeStringify, { allowDangerousHtml: true })
-}
+// Built once at module load and frozen. freeze() lets unified optimise the
+// plugin chain so process() is allocation-free on repeated calls. basePath is
+// passed per-call via VFile.data (see rehypeResolveImages above).
+const processor = unified()
+  .use(remarkParse)
+  .use(remarkGfm)
+  .use(remarkExtractMermaid)
+  // allowDangerousHtml: true lets raw `html` nodes from author-written HTML
+  // in markdown survive the mdast→hast conversion (required for P0 Feature 9 /
+  // P1 Feature 8 HTML passthrough). Mermaid blocks are now proper hast elements
+  // and are not affected by this flag.
+  .use(remarkRehype, { allowDangerousHtml: true })
+  .use(rehypeResolveImages)
+  // Sanitize BEFORE Shiki: Shiki runs on code elements that sanitize has
+  // already vetted. Shiki's style= output on <span> is unsanitized but
+  // intentionally allowed — sanitizeOptions adds 'style' to the allow-list
+  // specifically for this reason (see sanitize.ts).
+  .use(rehypeSanitize, sanitizeOptions)
+  // Dual-theme: emits CSS custom properties per <span> so switching themes
+  // is a CSS variable toggle with no code-block re-render (see ADR-003).
+  .use(rehypeShiki, { themes: { light: 'github-light', dark: 'github-dark' } })
+  // allowDangerousHtml: true serializes any surviving raw HAST nodes from
+  // user-authored HTML (already sanitized above).
+  .use(rehypeStringify, { allowDangerousHtml: true })
+  .freeze()
 
 export async function renderMarkdown(content: string, basePath: string): Promise<string> {
-  const processor = buildPipeline(basePath)
-  const file = await processor.process(content)
+  const file = await processor.process({ value: content, data: { basePath } })
   return String(file)
 }

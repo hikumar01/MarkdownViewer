@@ -6,12 +6,12 @@
     "lib": ["ES2021", "DOM", "DOM.Iterable"],
     "moduleResolution": "bundler",
     "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true,
-    "noEmit": true,
-    "paths": {
-      "@renderer/*": ["./src/renderer/*"],
-      "@ui/*": ["./src/ui/*"]
-    }
+    "noEmit": true
   },
-  "include": ["src"]
+  "include": ["ui"]
 }

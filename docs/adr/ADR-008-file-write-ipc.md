@@ -75,7 +75,7 @@ Markdown files are small (typically < 1 MB). The cost of reading the full file, 
 
 **Committed to:**
 - One Rust function per write operation type — no generic message dispatch
-- All write commands are registered in `src-tauri/capabilities/default.json` with `fs:write-files`
+- All write commands are registered in `app/capabilities/default.json` with `fs:write-files`
 - The frontend always sets `suppressNextReload` before any write command
 - Line numbers passed from the frontend are 1-indexed, matching remark's `position.start.line`
 - Future write operations (write_range, write_file, write_binary) extend this pattern — they do not replace it

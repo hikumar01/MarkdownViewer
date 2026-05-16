@@ -75,7 +75,7 @@ markview is a desktop markdown viewer with first-class Mermaid diagram support. 
 | [Status Bar — Word Count / Reading Time](./P3.md#3-status-bar--word-count-and-reading-time) | Excludes frontmatter, code blocks, Mermaid source |
 | [Status Bar — File Metadata](./P3.md#4-status-bar--file-metadata) | File size, last modified (relative) |
 | [Status Bar — Active Heading](./P3.md#5-status-bar--active-heading-and-scroll-position) | `§ Section Name`; scroll % fallback |
-| [Drag and Drop File](./P3.md#6-drag-and-drop-file) | Drop .md onto window; visual drop indicator |
+| [Drag and Drop File](./P3.md#6-drag-and-drop-file) | ~~Removed~~ — file opening is via File menu only |
 | [Recent Files List](./P3.md#7-recent-files-list) | Last 10 files in File menu; grayed-out missing files |
 | [Open in Default Editor (Cmd+E)](./P3.md#8-open-in-default-editor-cmde) | system default or configurable preferred editor |
 
@@ -173,7 +173,7 @@ All Tauri plugins required by the feature set. Pin to these versions at project 
 | `tauri-plugin-deep-link` | `app.on('open-file')` | P1 File type association |
 | `tauri-plugin-notification` | `Notification` | Toast notifications |
 
-**Capabilities file** (`src-tauri/capabilities/default.json`) — explicit permission allowlist:
+**Capabilities file** (`app/capabilities/default.json`) — explicit permission allowlist:
 
 ```json
 {

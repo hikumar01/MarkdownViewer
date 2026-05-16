@@ -7,7 +7,7 @@ A fast, offline-first desktop markdown viewer with Mermaid diagram rendering and
 - GitHub-flavored Markdown rendering (tables, strikethrough, task lists, footnotes)
 - Mermaid diagram rendering (flowcharts, sequence, Gantt, class diagrams, etc.)
 - Syntax-highlighted code blocks with dual light/dark themes (Shiki)
-- File-open dialog, drag-and-drop, and `Cmd/Ctrl+O` keyboard shortcut
+- File → Open File… menu item and `Cmd/Ctrl+O` keyboard shortcut
 - Live reload when the file changes on disk
 - Light/dark theme that follows the OS preference
 - `.md` / `.markdown` file association (double-click to open)
@@ -41,7 +41,7 @@ The script checks all prerequisites, installs what it can automatically, fetches
 pnpm install
 
 # 2. Pre-fetch Rust crates (optional — cargo will do this on first build anyway)
-cd src-tauri && cargo fetch && cd ..
+cd app && cargo fetch && cd ..
 ```
 
 ## Development
@@ -64,7 +64,7 @@ pnpm dev:frontend
 pnpm build
 ```
 
-Produces a platform-native installer in `src-tauri/target/release/bundle/`:
+Produces a platform-native installer in `app/target/release/bundle/`:
 
 | Platform | Output |
 |----------|--------|
@@ -88,7 +88,7 @@ Both lock files are committed and should stay committed:
 | File | Purpose |
 |------|---------|
 | `pnpm-lock.yaml` | Pins exact JS dependency versions |
-| `src-tauri/Cargo.lock` | Pins exact Rust crate versions |
+| `app/Cargo.lock` | Pins exact Rust crate versions |
 
 Never delete these before a build. Run `pnpm install` (not `pnpm install --frozen-lockfile`) and `cargo update` deliberately when you want to upgrade dependencies.
 
