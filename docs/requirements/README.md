@@ -1,6 +1,6 @@
-# markview — Requirements Index
+# MarkdownViewer — Requirements Index
 
-markview is a desktop markdown viewer with first-class Mermaid diagram support. The experience targets parity with GitHub and VS Code preview, with native desktop capabilities they lack.
+MarkdownViewer is a desktop markdown viewer with first-class Mermaid diagram support. The experience targets parity with GitHub and VS Code preview, with native desktop capabilities they lack.
 
 **Parser:** `remark` (unified ecosystem) — chosen over `markdown-it` because micromark resolves delimiter conflicts (e.g., `~` subscript vs `~~` strikethrough) structurally at the tokenizer level, not at plugin-registration time. See [ADR-002](../adr/ADR-002-markdown-parser-remark.md).
 
@@ -39,8 +39,8 @@ markview is a desktop markdown viewer with first-class Mermaid diagram support. 
 | [Syntax-Highlighted Code Blocks](./P0.md#4-syntax-highlighted-code-blocks) | Shiki, github-light / github-dark themes |
 | [Open File (Cmd+O)](./P0.md#5-open-file-cmdo) | Native OS file picker; .md and .markdown filter |
 | [Single Tab Window Model](./P0.md#6-single-tab-window-model) | One window, one file; min 600×400 px |
-| [Window Title](./P0.md#7-window-title) | `filename.md — markview`; macOS proxy icon |
-| [Local Image Rendering](./P0.md#8-local-image-rendering) | Relative paths resolved via custom `markview://` protocol |
+| [Window Title](./P0.md#7-window-title) | `filename.md — MarkdownViewer`; macOS proxy icon |
+| [Local Image Rendering](./P0.md#8-local-image-rendering) | Relative paths resolved via custom `markdownviewer://` protocol |
 
 ### P1 — Core Viewer Experience
 
@@ -149,7 +149,7 @@ Full rationale for each decision is in [`docs/adr/`](../adr/README.md). Summary:
 | Product scope | Viewer-only, single file, offline for v1 | [ADR-006](../adr/ADR-006-product-scope.md) |
 | Cross-platform | Cross-platform baseline required; platform enhancements are additive | [ADR-007](../adr/ADR-007-cross-platform-strategy.md) |
 | File-write IPC | Typed Rust commands per operation; frontend owns reload suppression | [ADR-008](../adr/ADR-008-file-write-ipc.md) |
-| Local file protocol | Custom `markview://` URI scheme via `register_uri_scheme_protocol()` | — |
+| Local file protocol | Custom `markdownviewer://` URI scheme via `register_uri_scheme_protocol()` | — |
 | File watching | `notify` crate — FSEvents (macOS) + ReadDirectoryChangesW (Windows) | — |
 | State persistence | `tauri-plugin-store` — JSON in app data directory | — |
 | Window state | `tauri-plugin-window-state` — auto save/restore bounds | — |

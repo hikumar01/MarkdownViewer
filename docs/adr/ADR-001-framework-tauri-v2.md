@@ -5,7 +5,7 @@
 
 ## Context
 
-markview is a desktop markdown+mermaid viewer targeting macOS and Windows. We need a framework that:
+MarkdownViewer is a desktop markdown+mermaid viewer targeting macOS and Windows. We need a framework that:
 
 - Renders a rich HTML/CSS/JS UI (markdown rendering, Mermaid diagrams, syntax highlighting, custom CSS)
 - Reads and watches files on the local filesystem
@@ -33,7 +33,7 @@ markview is a desktop markdown+mermaid viewer targeting macOS and Windows. We ne
 | Installer size | 80–120 MB (bundles Chromium) | 3–8 MB (uses OS WebView) |
 | Cold start | ~1.5–3 s | ~0.5–1 s |
 
-markview is a viewer app — it may be open all day alongside an editor. A 3× memory advantage for an idle process is meaningful.
+MarkdownViewer is a viewer app — it may be open all day alongside an editor. A 3× memory advantage for an idle process is meaningful.
 
 Electron bundles its own Chromium engine, which inflates the installer and RAM footprint. Tauri uses the OS WebView, so no engine needs to be bundled or kept running.
 

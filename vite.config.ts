@@ -17,7 +17,10 @@ export default defineConfig({
     // - Windows: WebView2 (Chromium-based, Chrome 105+)
     // - macOS/Linux: WebKit (Safari 13+)
     target: process.env.TAURI_ENV_PLATFORM === 'windows' ? 'chrome105' : 'safari13',
-    minify: process.env.TAURI_ENV_DEBUG ? false : 'esbuild',
+    minify: process.env.TAURI_ENV_DEBUG ? false : 'oxc',
     sourcemap: Boolean(process.env.TAURI_ENV_DEBUG),
+    // Chunks are served from the local filesystem in the Tauri WebView —
+    // the 500 kB web-app threshold is not meaningful for a desktop app.
+    chunkSizeWarningLimit: 4096,
   },
 })

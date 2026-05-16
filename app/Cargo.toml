@@ -1,5 +1,5 @@
 [package]
-name = "markview"
+name = "markdown_viewer"
 version = "0.1.0"
 description = "A fast markdown + mermaid viewer"
 authors = []
@@ -8,11 +8,11 @@ edition = "2021"
 rust-version = "1.77.2"
 
 [[bin]]
-name = "markview"
+name = "markdown_viewer"
 path = "src/main.rs"
 
 [lib]
-name = "markview_lib"
+name = "markdown_viewer_lib"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -35,6 +35,6 @@ mime_guess  = "2"
 urlencoding = "2"
 
 [features]
-# custom-protocol activates the markview:// URI scheme registration
+# custom-protocol activates the markdownviewer:// URI scheme registration
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

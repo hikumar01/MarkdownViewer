@@ -5,7 +5,7 @@
 
 ## Context
 
-The core feature of markview is rendering markdown to HTML. We need a parser and rendering pipeline that:
+The core feature of MarkdownViewer is rendering markdown to HTML. We need a parser and rendering pipeline that:
 
 - Supports CommonMark and GitHub Flavored Markdown (GFM) accurately
 - Is extensible — we add footnotes, definition lists, abbreviations, superscript, subscript, highlights, math (KaTeX), callouts, and more across P0–P6

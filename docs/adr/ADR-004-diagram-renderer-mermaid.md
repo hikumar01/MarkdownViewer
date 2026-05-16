@@ -5,7 +5,7 @@
 
 ## Context
 
-markview must render fenced code blocks tagged ` ```mermaid ` as diagrams. The renderer must:
+MarkdownViewer must render fenced code blocks tagged ` ```mermaid ` as diagrams. The renderer must:
 
 - Run entirely client-side in the WebView — no external server or process
 - Support flowcharts, sequence diagrams, Gantt charts, class diagrams, ER diagrams, and pie charts
@@ -19,7 +19,8 @@ markview must render fenced code blocks tagged ` ```mermaid ` as diagrams. The r
 
 - Initialize with `startOnLoad: false` to control rendering timing
 - Render each diagram block using `mermaid.render(id, source)` which returns a Promise
-- Inject the returned SVG string into a wrapper `<div>` replacing the source `<pre>` block
+- Sanitize the returned SVG with DOMPurify (SVG profile) before DOM insertion — `securityLevel:'loose'` allows inline SVG output but may include event handlers or `<script>` nodes in malicious diagram source; DOMPurify strips them
+- Replace the source `<pre class="mermaid-source">` block with a `<figure class="mermaid-diagram">` containing the sanitized SVG
 - Use Mermaid's built-in theme system (`default`, `dark`, `forest`, `neutral`, `base`)
 
 ## Rationale
@@ -32,7 +33,7 @@ PlantUML requires a Java runtime or a remote server. Graphviz is a C library tha
 
 ### Widest format coverage and adoption
 
-Mermaid covers all diagram types required by the product with a single library. It is the de-facto standard for diagrams in markdown — GitHub, GitLab, Notion, Obsidian, and VS Code all use it. Users authoring `.md` files with ` ```mermaid ` blocks expect markview to render them exactly as those platforms do.
+Mermaid covers all diagram types required by the product with a single library. It is the de-facto standard for diagrams in markdown — GitHub, GitLab, Notion, Obsidian, and VS Code all use it. Users authoring `.md` files with ` ```mermaid ` blocks expect MarkdownViewer to render them exactly as those platforms do.
 
 ### Async API (v10+)
 

@@ -1,11 +1,32 @@
 mod commands;
 mod protocol;
 
+pub(crate) const APP_NAME: &str = "MarkdownViewer";
+
 use tauri::{Emitter, Listener, Manager};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri_plugin_dialog::DialogExt;
 
 pub struct WatcherState(pub std::sync::Mutex<Option<notify::RecommendedWatcher>>);
+
+/// Validates a path string from untrusted input (argv, deep links).
+/// Canonicalizes and requires a .md / .markdown extension.
+/// Returns None and silently drops the path on any failure so callers
+/// never forward invalid or dangerous paths to the frontend.
+fn safe_markdown_path(s: &str) -> Option<String> {
+    let canonical = std::fs::canonicalize(s).ok()?;
+    if !canonical.is_file() { return None; }
+    let ext = canonical.extension()?.to_str()?.to_ascii_lowercase();
+    if !matches!(ext.as_str(), "md" | "markdown") { return None; }
+    Some(canonical.to_string_lossy().into_owned())
+}
+
+/// Extracts the filesystem path from a markdownviewer:// deep-link URL.
+/// Deep links arrive as "markdownviewer:///path/to/file.md"; stripping the
+/// scheme yields "/path/to/file.md" which can be passed to safe_markdown_path.
+fn path_from_deep_link(url: &str) -> Option<&str> {
+    url.strip_prefix("markdownviewer://")
+}
 
 pub fn run() {
     tauri::Builder::default()
@@ -14,7 +35,9 @@ pub fn run() {
         .plugin(
             tauri_plugin_single_instance::init(|app, argv, _cwd| {
                 if let Some(path) = argv.get(1) {
-                    let _ = app.emit("open-file", path);
+                    if let Some(safe) = safe_markdown_path(path) {
+                        let _ = app.emit("open-file", safe);
+                    }
                 }
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.set_focus();
@@ -23,7 +46,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_deep_link::init())
         .manage(WatcherState(std::sync::Mutex::new(None)))
-        .register_uri_scheme_protocol("markview", protocol::handle)
+        .register_uri_scheme_protocol("markdownviewer", protocol::handle)
         .setup(|app| {
             build_menu(app)?;
 
@@ -36,7 +59,13 @@ pub fn run() {
                             .add_filter("Markdown", &["md", "markdown"])
                             .add_filter("All Files", &["*"])
                             .pick_file(move |path| {
-                                if let Some(p) = path.and_then(|p| p.into_path().ok()) {
+                                // Canonicalize the dialog-chosen path before forwarding.
+                                // No extension check here — the user explicitly chose the file.
+                                if let Some(p) = path
+                                    .and_then(|p| p.into_path().ok())
+                                    .and_then(|p| std::fs::canonicalize(p).ok())
+                                    .filter(|p| p.is_file())
+                                {
                                     let _ = handle.emit("open-file", p.to_string_lossy().as_ref());
                                 }
                             });
@@ -50,7 +79,11 @@ pub fn run() {
             app.listen("deep-link://new-url", move |event| {
                 if let Ok(urls) = serde_json::from_str::<Vec<String>>(event.payload()) {
                     if let Some(url) = urls.first() {
-                        let _ = handle.emit("open-file", url);
+                        if let Some(path) = path_from_deep_link(url) {
+                            if let Some(safe) = safe_markdown_path(path) {
+                                let _ = handle.emit("open-file", safe);
+                            }
+                        }
                     }
                 }
             });
@@ -102,7 +135,7 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
 
     #[cfg(target_os = "macos")]
     {
-        let app_menu = Submenu::with_items(app, "markview", true, &[
+        let app_menu = Submenu::with_items(app, APP_NAME, true, &[
             &PredefinedMenuItem::about(app, None, None)?,
             &sep()?,
             &PredefinedMenuItem::services(app, None)?,

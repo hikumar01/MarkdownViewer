@@ -5,7 +5,7 @@
 
 ## Context
 
-markview was initially scoped as a viewer, but multiple editor- and server-adjacent features were raised during planning:
+MarkdownViewer was initially scoped as a viewer, but multiple editor- and server-adjacent features were raised during planning:
 - Split view with a code editor pane
 - Folder sidebar for navigating related `.md` files
 - Remote URL preview (fetch and render from `https://`)
@@ -30,7 +30,7 @@ v1 ships as a **viewer-only, single-file, offline-first** app.
 
 ### Viewer-first is a coherent product position
 
-VS Code's markdown preview is embedded in an editor. GitHub renders markdown read-only. markview's value is being the best standalone read-only renderer — fast, lightweight, always open. Adding an editor pulls it toward competing with VS Code at a feature set VS Code already wins.
+VS Code's markdown preview is embedded in an editor. GitHub renders markdown read-only. MarkdownViewer's value is being the best standalone read-only renderer — fast, lightweight, always open. Adding an editor pulls it toward competing with VS Code at a feature set VS Code already wins.
 
 ### Single-file keeps the security model simple
 

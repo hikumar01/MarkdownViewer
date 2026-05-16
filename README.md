@@ -11,7 +11,7 @@ A fast, offline-first desktop markdown viewer with Mermaid diagram rendering and
 - Live reload when the file changes on disk
 - Light/dark theme that follows the OS preference
 - `.md` / `.markdown` file association (double-click to open)
-- Local image rendering via `markview://` custom protocol (no arbitrary file exposure)
+- Local image rendering via `markdownviewer://` custom protocol (no arbitrary file exposure)
 - Single-instance enforcement — re-opening while running focuses the existing window
 
 ## Prerequisites
@@ -79,7 +79,7 @@ All major technology decisions are documented as ADRs under `docs/adr/`. Key cho
 - **remark/unified** over markdown-it — composable plugin pipeline, typed AST ([ADR-002](docs/adr/ADR-002-markdown-parser-remark.md))
 - **Shiki** for syntax highlighting — zero runtime, dual-theme via CSS variables ([ADR-003](docs/adr/ADR-003-syntax-highlighter-shiki.md))
 - **Mermaid.js** for diagrams — runs entirely in the WebView, no server needed ([ADR-004](docs/adr/ADR-004-diagram-renderer-mermaid.md))
-- **`markview://` custom protocol** — serves local images without exposing `file://` ([ADR-001](docs/adr/ADR-001-framework-tauri-v2.md))
+- **`markdownviewer://` custom protocol** — serves local images without exposing `file://` ([ADR-001](docs/adr/ADR-001-framework-tauri-v2.md))
 
 ## Lock Files
 
