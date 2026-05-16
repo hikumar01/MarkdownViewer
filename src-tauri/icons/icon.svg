@@ -1,11 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <!-- Rounded blue background — matches the app's --btn-bg colour -->
   <rect width="512" height="512" rx="110" fill="#0969da"/>
-  <!--
-    Bold "M" glyph drawn as a path so it renders identically at all sizes
-    without relying on font availability.
-    Points:  left post (80,400)→(80,120), V-peak to (256,296), right post (432,120)→(432,400)
-  -->
   <path d="M 80 400 L 80 120 L 256 296 L 432 120 L 432 400"
         fill="none" stroke="white" stroke-width="76"
         stroke-linecap="round" stroke-linejoin="round"/>

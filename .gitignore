@@ -1,22 +1,17 @@
 node_modules
 dist
 .DS_Store
+.claude/
 
 # Tauri build output and generated files
 src-tauri/target
 src-tauri/gen
 
-# Icons: icon.svg is the canonical source.
-# The 5 desktop binary formats (32x32.png, 128x128.png, 128x128@2x.png,
-# icon.icns, icon.ico) are committed for reproducible builds.
-# Everything else `tauri icon` may generate is excluded:
-src-tauri/icons/64x64.png
-src-tauri/icons/icon.png
-src-tauri/icons/StoreLogo.png
-src-tauri/icons/Square*.png
-src-tauri/icons/AppIcon-*.png
-src-tauri/icons/ios/
-src-tauri/icons/android/
+# Icons: icon.svg is the only committed file.
+# OS-specific binary formats are generated from it by build.rs at compile time.
+src-tauri/icons/*.png
+src-tauri/icons/*.ico
+src-tauri/icons/*.icns
 
 # Lock files are intentionally committed for reproducible builds.
 # Do NOT add pnpm-lock.yaml or src-tauri/Cargo.lock here.

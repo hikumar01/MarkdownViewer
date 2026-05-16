@@ -10,10 +10,12 @@ Usage:
 What this does:
   1. Checks (and optionally installs) Rust, Node.js, pnpm
   2. pnpm install  — JS dependencies
-  3. cargo fetch   — pre-downloads Rust crates
+  3. cargo fetch   — pre-downloads Rust crates (includes resvg + icon crates)
   4. pnpm build    — compiles the frontend to dist/ so cargo build works
                      standalone (e.g. for IDE / rust-analyzer support)
-  5. pnpm tauri icon — generates all required app icon sizes if missing
+
+  App icons are generated automatically from icons/icon.svg the first time
+  `cargo build` runs (via build.rs). No manual step required.
 """
 
 import argparse
@@ -223,95 +225,6 @@ def frontend_build() -> bool:
     return True
 
 
-_ICONS_DIR = SRC_TAURI / "icons"
-_ICON_SVG   = _ICONS_DIR / "icon.svg"
-_REQUIRED_ICONS = ["32x32.png", "128x128.png", "128x128@2x.png", "icon.icns", "icon.ico"]
-
-# Desktop-only extras produced by `tauri icon` that we don't need.
-_MOBILE_EXTRAS = ["64x64.png", "icon.png", "StoreLogo.png"]
-_MOBILE_GLOBS  = ["Square*.png", "AppIcon-*.png"]
-_MOBILE_DIRS   = ["ios", "android"]
-
-
-def _make_source_png() -> str:
-    """Return path to a temporary 1024×1024 PNG for `pnpm tauri icon`.
-
-    Tries SVG converters in order (resvg → rsvg-convert → inkscape), then
-    falls back to a programmatically generated solid-colour PNG.
-    The caller is responsible for deleting the returned file.
-    """
-    import tempfile, zlib, struct
-
-    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-    tmp.close()
-    out = tmp.name
-
-    if _ICON_SVG.exists():
-        for cmd in (
-            ["resvg",        str(_ICON_SVG), out, "--width", "1024", "--height", "1024"],
-            ["rsvg-convert", "-w", "1024", "-h", "1024", str(_ICON_SVG), "-o", out],
-            ["inkscape",     str(_ICON_SVG), "--export-width=1024", f"--export-filename={out}"],
-        ):
-            if which(cmd[0]) and run(cmd).returncode == 0:
-                info(f"Converted icon.svg → PNG using {cmd[0]}")
-                return out
-
-    info("No SVG converter found — generating a solid-colour placeholder PNG")
-
-    def _chunk(tag: bytes, data: bytes) -> bytes:
-        payload = tag + data
-        return struct.pack(">I", len(data)) + payload + struct.pack(">I", zlib.crc32(payload) & 0xFFFFFFFF)
-
-    W = H = 1024
-    # #0969da in RGB
-    scanline = b"\x00" + bytes([0x09, 0x69, 0xDA] * W)
-    raw = scanline * H
-    png = (
-        b"\x89PNG\r\n\x1a\n"
-        + _chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0))
-        + _chunk(b"IDAT", zlib.compress(raw))
-        + _chunk(b"IEND", b"")
-    )
-    with open(out, "wb") as f:
-        f.write(png)
-    return out
-
-
-def _remove_mobile_icons() -> None:
-    """Delete mobile-only icon assets generated as a side effect of `tauri icon`."""
-    import shutil
-    for name in _MOBILE_EXTRAS:
-        p = _ICONS_DIR / name
-        if p.exists():
-            p.unlink()
-    for pattern in _MOBILE_GLOBS:
-        for f in _ICONS_DIR.glob(pattern):
-            f.unlink()
-    for d in _MOBILE_DIRS:
-        target = _ICONS_DIR / d
-        if target.exists():
-            shutil.rmtree(target)
-
-
-def generate_icons() -> bool:
-    """Generate the 5 required desktop icon formats via the Tauri CLI if missing."""
-    hdr("Checking app icons")
-    if all((_ICONS_DIR / f).exists() for f in _REQUIRED_ICONS):
-        ok("App icons present")
-        return True
-
-    info("Generating app icons …")
-    src = _make_source_png()
-    res = subprocess.run(["pnpm", "tauri", "icon", src], cwd=str(ROOT))
-    os.unlink(src)
-
-    if res.returncode != 0:
-        fail("Icon generation failed")
-        return False
-
-    _remove_mobile_icons()
-    ok("App icons generated (desktop-only)")
-    return True
 
 # ---------------------------------------------------------------------------
 # Main
@@ -377,9 +290,6 @@ def main() -> int:
         return 1
 
     if not frontend_build():
-        return 1
-
-    if not generate_icons():
         return 1
 
     # Done

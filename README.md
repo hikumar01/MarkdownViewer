@@ -71,44 +71,6 @@ Produces a platform-native installer in `src-tauri/target/release/bundle/`:
 | macOS | `.app` + `.dmg` |
 | Windows | `.exe` (NSIS installer) + `.msi` |
 
-## Project Layout
-
-```
-markview/
-├── src/                        # TypeScript frontend
-│   ├── main.ts                 # App entry — file loading, events, IPC
-│   ├── renderer/
-│   │   ├── pipeline.ts         # remark → rehype → Shiki pipeline
-│   │   ├── mermaid.ts          # Mermaid.js render pass (post-DOM inject)
-│   │   └── sanitize.ts         # rehype-sanitize schema
-│   ├── ui/
-│   │   ├── drop.ts             # Drag-and-drop handler
-│   │   └── theme.ts            # OS theme detection + CSS toggle
-│   └── styles/
-│       └── app.css             # Layout + Shiki dark-mode vars
-├── src-tauri/                  # Rust backend
-│   ├── src/
-│   │   ├── lib.rs              # Tauri builder, plugins, protocol, window events
-│   │   ├── protocol.rs         # markview:// custom URI handler
-│   │   └── commands/
-│   │       ├── file.rs         # read_file, open_file_dialog, set_window_title
-│   │       └── watcher.rs      # watch_file / unwatch_file (notify crate)
-│   ├── capabilities/
-│   │   └── default.json        # Tauri v2 capability grants
-│   ├── Cargo.toml
-│   ├── Cargo.lock              # Committed — reproducible Rust builds
-│   └── tauri.conf.json
-├── docs/
-│   ├── adr/                    # Architecture Decision Records (ADR-001 … ADR-008)
-│   └── requirements/           # Feature priorities P0 … P7
-├── index.html
-├── package.json
-├── pnpm-lock.yaml              # Committed — reproducible JS builds
-├── tsconfig.json
-├── vite.config.ts
-└── setup.py                    # One-shot environment setup script
-```
-
 ## Architecture
 
 All major technology decisions are documented as ADRs under `docs/adr/`. Key choices:

@@ -14,8 +14,6 @@ pub struct WatcherState(pub std::sync::Mutex<Option<notify::RecommendedWatcher>>
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(
             tauri_plugin_single_instance::init(|app, argv, _cwd| {
