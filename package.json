@@ -1,0 +1,38 @@
+{
+  "name": "markview",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.1.2",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "tauri dev --config app/tauri.conf.json",
+    "dev:frontend": "vite",
+    "build": "vite build",
+    "bundle": "tauri build --config app/tauri.conf.json",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@shikijs/rehype": "^1",
+    "@tauri-apps/api": "^2",
+    "github-markdown-css": "^5",
+    "mermaid": "^11",
+    "rehype-sanitize": "^6",
+    "rehype-stringify": "^10",
+    "remark-gfm": "^4",
+    "remark-parse": "^11",
+    "remark-rehype": "^11",
+    "shiki": "^1",
+    "unified": "^11",
+    "unist-util-visit": "^5"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@types/hast": "^3.0.4",
+    "@types/mdast": "^4.0.4",
+    "typescript": "^5",
+    "vite": "^5"
+  }
+}

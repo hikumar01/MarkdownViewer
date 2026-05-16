@@ -1,0 +1,17 @@
+node_modules
+dist
+.DS_Store
+.claude/
+
+# Build artifacts — target/ is redirected to project root via .cargo/config.toml
+target
+app/gen
+
+# Icons: icon.svg is the only committed file.
+# OS-specific binary formats are generated from it by build.rs at compile time.
+app/icons/*.png
+app/icons/*.ico
+app/icons/*.icns
+
+# Lock files are intentionally committed for reproducible builds.
+# Do NOT add pnpm-lock.yaml or app/Cargo.lock here.
