@@ -5,7 +5,7 @@
 
 ## Context
 
-markview supports a large number of markdown extensions beyond CommonMark and GFM: superscript, subscript, highlight, footnotes, definition lists, abbreviations, callouts, image captions, math, and more. Each is implemented as a remark or rehype plugin.
+MarkdownViewer supports a large number of markdown extensions beyond CommonMark and GFM: superscript, subscript, highlight, footnotes, definition lists, abbreviations, callouts, image captions, math, and more. Each is implemented as a remark or rehype plugin.
 
 We need to decide how these plugins are organized, toggled, and tested:
 

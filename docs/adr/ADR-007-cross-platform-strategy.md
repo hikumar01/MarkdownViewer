@@ -5,7 +5,7 @@
 
 ## Context
 
-markview targets macOS and Windows. Some OS features have direct equivalents on both platforms; others exist only on one. Examples:
+MarkdownViewer targets macOS and Windows. Some OS features have direct equivalents on both platforms; others exist only on one. Examples:
 
 | Feature | macOS | Windows |
 |---|---|---|
@@ -37,7 +37,7 @@ We need a policy for how platform-specific features are handled so developers kn
 
 | Feature | Cross-platform baseline | Platform enhancement |
 |---|---|---|
-| Window title | `window.set_title("filename — markview")` | macOS: `set_represented_filename` for proxy icon |
+| Window title | `window.set_title("filename — MarkdownViewer")` | macOS: `set_represented_filename` for proxy icon |
 | Recent files | In-app submenu from `tauri-plugin-store` list | macOS: `NSDocumentController.noteNewRecentDocumentURL` (Dock integration) — post-v1 |
 | File association | `tauri.conf.json` `fileAssociations` → Tauri generates `Info.plist` (macOS) and registry (Windows) | None needed — Tauri handles both |
 | File watching | `notify` crate — FSEvents (macOS) + ReadDirectoryChangesW (Windows) | None needed — `notify` abstracts both |

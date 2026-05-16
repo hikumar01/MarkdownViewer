@@ -1,11 +1,13 @@
 :root {
   --bg: #ffffff;
+  --text: #1f2328;
   --text-muted: #6e7681;
   --border: #d0d7de;
 }
 
 html.dark {
   --bg: #0d1117;
+  --text: #e6edf3;
   --text-muted: #8b949e;
   --border: #30363d;
 }
@@ -18,6 +20,7 @@ html.dark {
 
 body {
   background: var(--bg);
+  color: var(--text);
   height: 100vh;
   overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;

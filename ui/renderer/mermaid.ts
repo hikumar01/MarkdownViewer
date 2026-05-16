@@ -1,4 +1,5 @@
 import mermaid from 'mermaid'
+import DOMPurify from 'dompurify'
 
 // Running counter for unique mermaid render IDs within a session. A simple
 // counter is used rather than a content hash because Mermaid's cache is reset
@@ -11,9 +12,10 @@ export function initMermaid(theme: 'default' | 'dark'): void {
     // is injected into the DOM), not on DOMContentLoaded.
     startOnLoad: false,
     theme,
-    // WHY securityLevel 'loose' — Mermaid's default 'strict' mode sanitizes
-    // SVG click events that are needed for diagram interactivity (e.g. node
-    // clicks in flowcharts). 'loose' allows the full SVG output.
+    // WHY securityLevel 'loose' — Mermaid's default 'strict' mode wraps output
+    // in an iframe which prevents CSS theming and breaks layout. 'loose' outputs
+    // inline SVG. The SVG is sanitized with DOMPurify (SVG profile) immediately
+    // after render before being written to the DOM.
     securityLevel: 'loose',
   })
 }
@@ -40,11 +42,18 @@ export async function renderMermaidBlocks(container: HTMLElement): Promise<void>
     try {
       const { svg } = await mermaid.render(id, source)
 
+      // Sanitize the SVG with DOMPurify's SVG profile before DOM insertion.
+      // securityLevel:'loose' outputs inline SVG that may contain <script> or
+      // event-handler attributes from a malicious diagram source.
+      const cleanSvg = DOMPurify.sanitize(svg, {
+        USE_PROFILES: { svg: true, svgFilters: true },
+      })
+
       const figure = document.createElement('figure')
       figure.className = 'mermaid-diagram'
       figure.setAttribute('role', 'img')
       figure.setAttribute('aria-label', 'Mermaid diagram')
-      figure.innerHTML = svg
+      figure.innerHTML = cleanSvg
 
       pre.replaceWith(figure)
     } catch (err: unknown) {
@@ -57,19 +66,20 @@ export async function renderMermaidBlocks(container: HTMLElement): Promise<void>
 
       const errorDiv = document.createElement('div')
       errorDiv.className = 'mermaid-error'
-      errorDiv.innerHTML = [
-        `<p class="mermaid-error__message">${escapeHtml(message)}</p>`,
-        `<pre class="mermaid-error__source"><code>${escapeHtml(source)}</code></pre>`,
-      ].join('')
 
+      const msgP = document.createElement('p')
+      msgP.className = 'mermaid-error__message'
+      msgP.textContent = message
+
+      const code = document.createElement('code')
+      code.textContent = source
+      const sourcePre = document.createElement('pre')
+      sourcePre.className = 'mermaid-error__source'
+      sourcePre.appendChild(code)
+
+      errorDiv.appendChild(msgP)
+      errorDiv.appendChild(sourcePre)
       pre.replaceWith(errorDiv)
     }
   }
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
 }

@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-This folder contains Architecture Decision Records (ADRs) for markview. Each ADR documents a significant technical decision: the context that forced the decision, the options considered, and the choice made with its rationale.
+This folder contains Architecture Decision Records (ADRs) for MarkdownViewer. Each ADR documents a significant technical decision: the context that forced the decision, the options considered, and the choice made with its rationale.
 
 ADRs are immutable once accepted. If a decision is reversed, a new ADR supersedes the old one — the old one is updated to "Superseded" status only.
 

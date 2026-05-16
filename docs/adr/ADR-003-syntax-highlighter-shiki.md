@@ -7,7 +7,7 @@
 
 Fenced code blocks in markdown must be syntax-highlighted. The highlighter must:
 
-- Produce output visually consistent with VS Code (the reference rendering environment for most markview users)
+- Produce output visually consistent with VS Code (the reference rendering environment for most MarkdownViewer users)
 - Support light and dark themes without a page reload or flash of unstyled content
 - Handle a large number of languages without requiring a full-page re-render when the theme changes
 - Work in a browser WebView (no Node.js APIs)
@@ -25,7 +25,7 @@ Fenced code blocks in markdown must be syntax-highlighted. The highlighter must:
 
 ### Token accuracy
 
-Shiki uses the same TextMate grammar engine as VS Code. Token boundaries and scope assignments are identical to what VS Code shows for the same code. This is the exact parity with VS Code that markview aims for.
+Shiki uses the same TextMate grammar engine as VS Code. Token boundaries and scope assignments are identical to what VS Code shows for the same code. This is the exact parity with VS Code that MarkdownViewer aims for.
 
 highlight.js uses its own heuristic parser. It produces roughly accurate results for common languages but diverges from VS Code on edge cases (template literals, JSX, complex regex, Rust lifetimes). Prism.js is similar.
 
