@@ -3,6 +3,7 @@ import remarkParse from 'remark-parse'
 import remarkGfm from 'remark-gfm'
 import remarkRehype from 'remark-rehype'
 import rehypeRaw from 'rehype-raw'
+import rehypeSlug from 'rehype-slug'
 import rehypeSanitize from 'rehype-sanitize'
 import rehypeShiki from '@shikijs/rehype'
 import rehypeStringify from 'rehype-stringify'
@@ -136,13 +137,16 @@ const processor = unified()
   // so Shiki skips it and renderMermaidBlocks() can find it by class.
   .use(rehypeExtractMermaid)
   .use(rehypeResolveImages)
+  // Generate id attributes on h1-h6 for in-page anchor navigation.
+  // Must run before rehypeSanitize, which allows id only on headings.
+  .use(rehypeSlug)
   // Sanitize BEFORE Shiki: Shiki runs on code elements that sanitize has
   // already vetted. Shiki's style= output on <span>/<pre> is unsanitized but
   // intentionally allowed — sanitizeOptions adds 'style' to the allow-list
   // specifically for those elements (see sanitize.ts).
   .use(rehypeSanitize, sanitizeOptions)
   // Dual-theme: emits CSS custom properties per <span> so switching themes
-  // is a CSS variable toggle with no code-block re-render (see ADR-003).
+  // is a CSS variable toggle with no code-block re-render (see architecture.md#syntax-highlighter-shiki).
   .use(rehypeShiki, { themes: { light: 'github-light', dark: 'github-dark' } })
   // No allowDangerousHtml needed: rehype-raw has already materialized all raw
   // nodes; rehypeSanitize has stripped anything malicious; no raw HAST nodes remain.

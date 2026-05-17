@@ -4,10 +4,15 @@ mod protocol;
 pub(crate) const APP_NAME: &str = "MarkdownViewer";
 
 use tauri::{Emitter, Listener, Manager};
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
 use tauri_plugin_dialog::DialogExt;
 
 pub struct WatcherState(pub std::sync::Mutex<Option<notify::RecommendedWatcher>>);
+
+// Holds a file path queued during cold launch (RunEvent::Opened fires before
+// the WebView is ready, so the open-file emit is dropped). The frontend pops
+// this once on DOMContentLoaded to recover the path.
+pub struct PendingOpen(pub std::sync::Mutex<Option<String>>);
 
 /// Validates a path string from untrusted input (argv, deep links).
 /// Canonicalizes and requires a .md / .markdown extension.
@@ -22,10 +27,13 @@ fn safe_markdown_path(s: &str) -> Option<String> {
 }
 
 /// Extracts the filesystem path from a markdownviewer:// deep-link URL.
-/// Deep links arrive as "markdownviewer:///path/to/file.md"; stripping the
-/// scheme yields "/path/to/file.md" which can be passed to safe_markdown_path.
+/// Requires the canonical 3-slash form "markdownviewer:///path/to/file.md"
+/// (empty authority + absolute path). Rejects non-empty authority
+/// (e.g. "markdownviewer://hostname/path") to prevent hostname injection.
 fn path_from_deep_link(url: &str) -> Option<&str> {
-    url.strip_prefix("markdownviewer://")
+    let rest = url.strip_prefix("markdownviewer://")?;
+    if !rest.starts_with('/') { return None; }
+    Some(rest)
 }
 
 pub fn run() {
@@ -46,6 +54,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_deep_link::init())
         .manage(WatcherState(std::sync::Mutex::new(None)))
+        .manage(PendingOpen(std::sync::Mutex::new(None)))
         .register_uri_scheme_protocol("markdownviewer", protocol::handle)
         .setup(|app| {
             build_menu(app)?;
@@ -56,7 +65,7 @@ pub fn run() {
                         let handle = app.clone();
                         // TODO: accept the current file path from the frontend so the
                         // dialog can start in that directory (.set_directory()).
-                        // See docs/requirements/unimplemented.md#open-file-gaps.
+                        // See docs/unimplemented.md#open-file-gaps.
                         app.dialog()
                             .file()
                             .add_filter("Markdown", &["md", "markdown"])
@@ -73,7 +82,34 @@ pub fn run() {
                                 }
                             });
                     }
-                    "close-file" => { let _ = app.emit("close-file", ()); }
+                    "close-file" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.set_title(APP_NAME);
+                        }
+                        let _ = app.emit("close-file", ());
+                    }
+                    "nav-back" | "nav-forward" => {
+                        let _ = app.emit(event.id().as_ref(), ());
+                    }
+                    "theme-system" | "theme-light" | "theme-dark" => {
+                        let chosen = event.id().as_ref()
+                            .strip_prefix("theme-")
+                            .unwrap_or("system");
+                        // Update the radio-group checkmarks: check the selected
+                        // item, uncheck the other two.
+                        if let Some(menu) = app.menu() {
+                            for (id, checked) in [
+                                ("theme-system", chosen == "system"),
+                                ("theme-light",  chosen == "light"),
+                                ("theme-dark",   chosen == "dark"),
+                            ] {
+                                if let Some(MenuItemKind::Check(item)) = menu.get(id) {
+                                    let _ = item.set_checked(checked);
+                                }
+                            }
+                        }
+                        let _ = app.emit("theme-set", chosen);
+                    }
                     _ => {}
                 }
             });
@@ -98,10 +134,38 @@ pub fn run() {
             commands::set_window_title,
             commands::watch_file,
             commands::unwatch_file,
+            commands::sync_theme_menu,
+            commands::sync_nav_menu,
+            commands::open_url,
+            commands::get_pending_open,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
+            // macOS: file opened from Finder while the app is already running.
+            // Covers double-click on .md/.markdown and "Open With" when the
+            // app is the chosen handler. URLs arrive as file:///path/to/file.md.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = &event {
+                for url in urls {
+                    if url.scheme() == "file" {
+                        if let Ok(path) = url.to_file_path() {
+                            if let Some(safe) = safe_markdown_path(&path.to_string_lossy()) {
+                                // Store for cold-launch retrieval (WebView not ready yet).
+                                *app.state::<PendingOpen>().0
+                                    .lock().unwrap_or_else(|p| p.into_inner()) = Some(safe.clone());
+                                // Also emit for the already-running case (listener is active).
+                                let _ = app.emit("open-file", safe);
+                            }
+                        }
+                    }
+                }
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::WindowEvent {
                 label,
@@ -126,6 +190,11 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
 
     let file_menu = Submenu::with_items(app, "File", true, &[&open, &sep()?, &close])?;
 
+    // Go menu — Back/Forward start disabled; sync_nav_menu enables them as history grows.
+    let nav_back = MenuItem::with_id(app, "nav-back",    "Back",    false, Some("CmdOrCtrl+["))?;
+    let nav_fwd  = MenuItem::with_id(app, "nav-forward", "Forward", false, Some("CmdOrCtrl+]"))?;
+    let go_menu  = Submenu::with_items(app, "Go", true, &[&nav_back, &nav_fwd])?;
+
     let edit_menu = Submenu::with_items(app, "Edit", true, &[
         &PredefinedMenuItem::undo(app, None)?,
         &PredefinedMenuItem::redo(app, None)?,
@@ -134,6 +203,17 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
         &PredefinedMenuItem::copy(app, None)?,
         &PredefinedMenuItem::paste(app, None)?,
         &PredefinedMenuItem::select_all(app, None)?,
+    ])?;
+
+    // Theme submenu — System is checked by default; sync_theme_menu command
+    // updates the checkmarks on startup based on the persisted preference.
+    let theme_system = CheckMenuItem::with_id(app, "theme-system", "System", true, true,  None::<&str>)?;
+    let theme_light  = CheckMenuItem::with_id(app, "theme-light",  "Light",  true, false, None::<&str>)?;
+    let theme_dark   = CheckMenuItem::with_id(app, "theme-dark",   "Dark",   true, false, None::<&str>)?;
+    let theme_sub = Submenu::with_items(app, "Theme", true, &[
+        &theme_system,
+        &theme_light,
+        &theme_dark,
     ])?;
 
     #[cfg(target_os = "macos")]
@@ -152,6 +232,8 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
 
         let view_menu = Submenu::with_items(app, "View", true, &[
             &PredefinedMenuItem::fullscreen(app, None)?,
+            &sep()?,
+            &theme_sub,
         ])?;
 
         let window_menu = Submenu::with_items(app, "Window", true, &[
@@ -164,13 +246,17 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
             &app_menu,
             &file_menu,
             &edit_menu,
+            &go_menu,
             &view_menu,
             &window_menu,
         ])?)?;
     }
 
     #[cfg(not(target_os = "macos"))]
-    app.set_menu(Menu::with_items(app, &[&file_menu, &edit_menu])?)?;
+    {
+        let view_menu = Submenu::with_items(app, "View", true, &[&theme_sub])?;
+        app.set_menu(Menu::with_items(app, &[&file_menu, &edit_menu, &go_menu, &view_menu])?)?;
+    }
 
     Ok(())
 }

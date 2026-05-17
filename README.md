@@ -4,15 +4,18 @@ A fast, offline-first desktop markdown viewer with Mermaid diagram rendering and
 
 ## Features
 
-- GitHub-flavored Markdown rendering (tables, strikethrough, task lists, footnotes)
-- Mermaid diagram rendering (flowcharts, sequence, Gantt, class diagrams, etc.)
-- Syntax-highlighted code blocks with dual light/dark themes (Shiki)
-- File → Open File… menu item and `Cmd/Ctrl+O` keyboard shortcut
-- Live reload when the file changes on disk
-- Light/dark theme that follows the OS preference
-- `.md` / `.markdown` file association (double-click to open)
+- GitHub-flavored Markdown rendering (tables, strikethrough, task lists, footnotes, raw HTML)
+- Mermaid diagram rendering — all types (flowchart, sequence, class, ER, Gantt, git, pie, mindmap, and more)
+- Syntax-highlighted code blocks with dual light/dark themes (Shiki, 100+ languages)
 - Local image rendering via `markdownviewer://` custom protocol (no arbitrary file exposure)
-- Single-instance enforcement — re-opening while running focuses the existing window
+- File → Open File… (`Cmd+O`), drag-and-drop, Finder double-click, deep links (`markdownviewer:///path`)
+- Live reload when the file changes on disk (FSEvents / ReadDirectoryChangesW)
+- Back/Forward navigation history (`Cmd+[` / `Cmd+]`); relative `.md` link following
+- External link preview tooltip; anchor scroll to headings
+- Light/dark theme that follows the OS, with manual override; FOUC-free startup
+- `.md` / `.markdown` file type association; window state persisted across sessions
+
+See [docs/product-summary.md](docs/product-summary.md) for full feature details.
 
 ## Prerequisites
 
@@ -61,7 +64,7 @@ pnpm dev:frontend
 ## Building
 
 ```bash
-pnpm build
+pnpm bundle
 ```
 
 Produces a platform-native installer in `app/target/release/bundle/`:
@@ -73,13 +76,26 @@ Produces a platform-native installer in `app/target/release/bundle/`:
 
 ## Architecture
 
-All major technology decisions are documented as ADRs under `docs/adr/`. Key choices:
+All major technology decisions and their full rationale are in [`docs/architecture.md`](docs/architecture.md). Key choices:
 
-- **Tauri v2** over Electron — smaller binary, no bundled Chromium, native WebView ([ADR-001](docs/adr/ADR-001-framework-tauri-v2.md))
-- **remark/unified** over markdown-it — composable plugin pipeline, typed AST ([ADR-002](docs/adr/ADR-002-markdown-parser-remark.md))
-- **Shiki** for syntax highlighting — zero runtime, dual-theme via CSS variables ([ADR-003](docs/adr/ADR-003-syntax-highlighter-shiki.md))
-- **Mermaid.js** for diagrams — runs entirely in the WebView, no server needed ([ADR-004](docs/adr/ADR-004-diagram-renderer-mermaid.md))
-- **`markdownviewer://` custom protocol** — serves local images without exposing `file://` ([ADR-001](docs/adr/ADR-001-framework-tauri-v2.md))
+- **Tauri v2** over Electron — smaller binary, no bundled Chromium, native WebView; 3× lower RAM ([Framework: Tauri v2](docs/architecture.md#framework-tauri-v2))
+- **remark/unified** over markdown-it — structural `~`/`~~` delimiter disambiguation; AST source positions ([Markdown Parser](docs/architecture.md#markdown-parser-remarkunified))
+- **Shiki** for syntax highlighting — VS Code token accuracy; dual-theme via CSS variables; no FOUC ([Syntax Highlighter](docs/architecture.md#syntax-highlighter-shiki))
+- **Mermaid.js** for diagrams — runs entirely in the WebView, no server needed ([Diagram Renderer](docs/architecture.md#diagram-renderer-mermaidjs))
+- **`markdownviewer://` custom protocol** — serves local images without exposing `file://` ([Security Model](docs/architecture.md#security-model))
+
+## Documentation
+
+| File | Theme | Contents |
+|---|---|---|
+| [docs/product-summary.md](docs/product-summary.md) | **Shipped** | All features live in the current release; keyboard shortcuts |
+| [docs/unimplemented.md](docs/unimplemented.md) | **Open** | Gaps, P2 quality improvements, full backlog overview (P3–P7), open points, deferred scope |
+| [docs/architecture.md](docs/architecture.md) | **Technical** | System design, technology decisions, security model, IPC reference, rendering pipeline |
+| [docs/P3.md](docs/P3.md) | **P3** | Navigation and discoverability |
+| [docs/P4.md](docs/P4.md) | **P4** | Power viewer features |
+| [docs/P5.md](docs/P5.md) | **P5** | Extended markdown syntax |
+| [docs/P6.md](docs/P6.md) | **P6** | Platform integration and power-user tools |
+| [docs/P7.md](docs/P7.md) | **P7** | Future scope |
 
 ## Lock Files
 

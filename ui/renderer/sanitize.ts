@@ -15,8 +15,9 @@ export const sanitizeOptions: Options = {
     '*': [
       ...existingAll,
       // GFM task lists use .task-list-item; heading anchors use class names;
-      // blocking class breaks GFM rendering.
-      'class',
+      // blocking className breaks GFM rendering. rehype-sanitize uses HAST
+      // property names ('className'), not HTML attribute names ('class').
+      'className',
       // 'style' is intentionally NOT allowed globally — see span/pre below.
       // 'id' is intentionally NOT allowed globally — see h1-h6 below.
     ],
@@ -33,5 +34,13 @@ export const sanitizeOptions: Options = {
     h4: [...elem('h4'), 'id'],
     h5: [...elem('h5'), 'id'],
     h6: [...elem('h6'), 'id'],
+  },
+
+  protocols: {
+    ...defaultSchema.protocols,
+    // markdownviewer:// is the custom scheme used by the Rust protocol handler
+    // to serve local images. Without this, rehype-sanitize strips the scheme
+    // from every img src, silently breaking all relative local images.
+    src: [...(defaultSchema.protocols?.src ?? []), 'markdownviewer'],
   },
 }

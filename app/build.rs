@@ -109,7 +109,7 @@ fn gen_pngs() {
         )
         .expect("failed to reconstruct pixmap for PNG");
         pixmap.save_png(&dest)
-            .expect(&format!("failed to save {name}"));
+            .unwrap_or_else(|e| panic!("failed to save {name}: {e}"));
         println!("cargo:warning=Generated {}", dest.display());
     }
 }
