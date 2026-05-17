@@ -19,6 +19,8 @@ For mid-level engineers contributing to or evaluating the codebase. Covers the s
    - [Product Scope (v1)](#product-scope-v1)
    - [Cross-platform Strategy](#cross-platform-strategy)
    - [File-write IPC Design](#file-write-ipc-design)
+   - [Class-based UI Toggle Pattern](#class-based-ui-toggle-pattern)
+   - [Async Menu Commands](#async-menu-commands)
 6. [Rendering Pipeline](#rendering-pipeline)
 7. [Mermaid Rendering](#mermaid-rendering)
 8. [Security Model](#security-model)
@@ -26,6 +28,9 @@ For mid-level engineers contributing to or evaluating the codebase. Covers the s
 10. [File Watching](#file-watching)
 11. [Theme System](#theme-system)
 12. [Navigation History](#navigation-history)
+13. [Table of Contents System](#table-of-contents-system)
+14. [In-document Search](#in-document-search)
+15. [Recent Files](#recent-files)
 
 ---
 
@@ -41,7 +46,7 @@ flowchart TB
             direction TB
             main["main.ts — bootstrap · history · events"]
             renderer["renderer/ — unified pipeline · Mermaid · Shiki"]
-            ev["events/ — theme · links · drag-drop"]
+            ev["events/ — theme · links · drag-drop · toc · search · recent"]
             css["styles/app.css — tokens · layouts · states"]
         end
         subgraph BE["Rust Backend · Tauri v2"]
@@ -83,7 +88,10 @@ flowchart TB
 | `ui/events/theme.ts` | Theme detection, preference persistence, OS change listener |
 | `ui/events/links.ts` | Click delegation — anchor scroll, external open, MD navigation |
 | `ui/events/drag.ts` | Native drag-drop overlay and file-open handler |
-| `ui/styles/app.css` | App chrome, image states, Mermaid states, drag overlay, link tooltip |
+| `ui/events/toc.ts` | TOC panel — build from DOM headings, IntersectionObserver scroll-spy, class-based toggle, persistence |
+| `ui/events/search.ts` | In-document search — mark.js integration, match navigation, overlay open/close |
+| `ui/events/recent.ts` | Recent files — localStorage read/write, native submenu sync via `sync_recent_menu` |
+| `ui/styles/app.css` | App chrome, image states, Mermaid states, drag overlay, TOC panel, search bar, link tooltip |
 | `app/src/lib.rs` | Tauri app setup, menu construction, event routing |
 | `app/src/commands.rs` | All `#[tauri::command]` handlers |
 | `app/src/protocol.rs` | `markdownviewer://` URI scheme — secure local file serving |
@@ -108,6 +116,8 @@ Full rationale for each decision is in the [Technology Decisions](#technology-de
 | Local file protocol | Custom `markdownviewer://` URI scheme via `register_uri_scheme_protocol()` | [Security Model](#security-model) |
 | File watching | `notify` crate — FSEvents (macOS) + ReadDirectoryChangesW (Windows) | [File Watching](#file-watching) |
 | Window state | `tauri-plugin-window-state` — auto save/restore bounds | [IPC Command Reference](#ipc-command-reference) |
+| UI toggle pattern | Class-based show/hide — not `hidden` attribute; WKWebView author stylesheet overrides UA rules | [Class-based UI Toggle Pattern](#class-based-ui-toggle-pattern) |
+| Async menu commands | Commands that call multiple menu APIs must be `async`; sync commands on main thread deadlock | [Async Menu Commands](#async-menu-commands) |
 
 ---
 
@@ -811,6 +821,9 @@ All commands are defined in `app/src/commands.rs` and registered in `lib.rs`.
 | `set_window_title` | `filename: String` | Update title bar (`filename — MarkdownViewer`, or just `MarkdownViewer` if empty) |
 | `sync_nav_menu` | `canBack: bool, canForward: bool` | Enable/disable Back/Forward menu items |
 | `sync_theme_menu` | `preference: String` | Sync View → Theme checkmarks on startup |
+| `sync_toc_menu` | `visible: bool` | Sync View → Table of Contents checkmark on startup and after each toggle |
+| `sync_recent_menu` | `paths: Vec<String>, current: Option<String>` | Rebuild Open Recent submenu; **must be async** — see [Async Menu Commands](#async-menu-commands) |
+| `get_pending_open` | — | Pop the file path queued during cold launch (before WebView ready); returns `Option<String>` |
 | `open_url` | `url: String` | Open an `http(s)://` URL in the system browser; rejects non-http |
 
 **Rust → Frontend (emit):**
@@ -823,6 +836,10 @@ All commands are defined in `app/src/commands.rs` and registered in `lib.rs`.
 | `close-file` | — | Close the current file |
 | `theme-set` | `'light' \| 'dark' \| 'system'` | Theme menu selection |
 | `nav-back` / `nav-forward` | — | Go menu Back/Forward |
+| `toc-toggle` | — | View → Table of Contents menu item clicked |
+| `find-in-doc` | — | Edit → Find in Document menu item clicked |
+| `open-recent-file` | `path: string` | User clicked a recent file entry in the native submenu |
+| `clear-recent` | — | User clicked "Clear Recent Files" |
 
 **IPC design note:** Each command has a static Rust function signature — parameter types are validated by the Tauri command macro at compile time. There is no generic message-dispatch pattern. See [File-write IPC Design](#file-write-ipc-design) for the rationale and the pattern for future write commands.
 
@@ -881,3 +898,128 @@ The history stack is an in-memory `string[]` in `main.ts`. Every new file open (
 The Go menu's Back/Forward items are enabled/disabled from the frontend via `sync_nav_menu` after each state change. In Tauri v2, `AppHandle::menu().get(id)` searches only root-level menu children (the top-level submenus). `nav-back` and `nav-forward` live inside the Go submenu — `sync_nav_menu` must iterate `menu.items()` → each `Submenu::items()` explicitly.
 
 Relative MD links are resolved using `resolveMdPath` in `ui/events/links.ts`. The function normalizes `..` segments then checks `result.startsWith(base)` to reject traversal outside the open file's directory tree. This mirrors the `resolveLocalPath` guard in `pipeline.ts` — both must be kept in sync if the path resolution logic changes.
+
+---
+
+## Table of Contents System
+
+The TOC panel (`#toc` in `index.html`) is built and managed entirely in the frontend — `ui/events/toc.ts`. No Rust backend involvement at render time.
+
+**Build:** after every `loadFile`, `updateToc(contentEl)` queries the rendered DOM for all `h1`–`h6` elements inside `.markdown-body` and builds a list of `<a>` entries. Each entry is indented by `(level - 1) * 1rem`. Entries with empty text are skipped. If no headings are found, a "No headings found" placeholder is shown.
+
+**Scroll-spy:** `IntersectionObserver` watches each heading element with `rootMargin: '-10% 0px -85% 0px'`. This creates a narrow horizontal band near the top of the viewport. When a heading enters this zone, it is marked as the active TOC entry (only one active at a time). The observer is torn down and rebuilt on each `updateToc` call.
+
+**Toggle:** `toggleToc()` flips a `visible` boolean stored in `localStorage['markview-toc-visible']`. Visibility is applied via `#toc.toc-visible { display: block }` — not the HTML `hidden` attribute. WKWebView's author stylesheet overrides the UA `[hidden] { display: none }` rule, making attribute-based hiding unreliable. The `#app.toc-open` class adds a `padding-right` margin to the document so text does not slide under the floating panel.
+
+**Menu sync:** `sync_toc_menu` is a sync Tauri command (safe because it calls `set_checked` on a single `CheckMenuItem` — a fast main-thread operation that does not require rebuilding the submenu tree).
+
+---
+
+## In-document Search
+
+The search bar (`#search-bar`) is a floating overlay managed by `ui/events/search.ts`.
+
+**Open/close:** `openSearch()` adds the `.search-open` class to `#search-bar`, which shows the element (`display: flex`) and calls `focus()` on the input. `closeSearch()` removes the class, calls `instance.unmark()` to clear all highlights, and resets the match counter. Escape and click-outside both call `closeSearch()`. The `find-in-doc` Tauri event (from the Edit menu) calls `openSearch()`.
+
+**Highlighting:** a single shared `Mark` instance wraps the `.markdown-body` container. On every `input` event, `instance.unmark()` then `instance.mark(query, { caseSensitive: false, accuracy: 'partially', ... })`. The `done` callback receives the total match count for the "N of M" display. Mermaid `<figure>` elements are excluded via `mark.js`'s `exclude` option.
+
+**Navigation:** all `.mark` elements are collected after each `mark()` call. `currentIndex` tracks the active match. Next/previous wrap around. The active element gets class `mark-active` (distinct accent color); all others have the default `mark` style (lighter tint). `scrollIntoView({ behavior: 'smooth', block: 'center' })` ensures the active match is visible.
+
+**TOC interaction:** when `#search-bar` is visible, `#app.search-active` is toggled. The TOC CSS rule `#app.search-active #toc { top: 3.5rem }` shifts the panel down to prevent overlap with the search bar.
+
+---
+
+## Recent Files
+
+Recent files are stored in `localStorage['markview-recent']` as a JSON array of absolute file paths (max 10, MRU first). `ui/events/recent.ts` is the single owner of this data.
+
+**Write path:** `addToRecent(path)` — prepend path, filter duplicates, trim to 10, save. Called unconditionally at the start of every `loadFile`, before the `try` block, so the entry is recorded even if rendering later fails.
+
+**Submenu rebuild:** `syncRecentMenu(currentPath)` calls the async `sync_recent_menu` Tauri command, passing the full list and the currently open path. The command:
+
+1. Filters out the current path and trims to 10 entries
+2. Increments a generation counter in `RecentPaths` state (generation is embedded in all IDs)
+3. Locates the "Open Recent" `Submenu` node via a two-level manual tree walk — `menu.get()` reliably finds `CheckMenuItem` nodes but not `Submenu` nodes in all Tauri v2 builds
+4. Removes existing items with a bounded loop (`for _ in 0..item_count { remove_at(0) }`) — an unbounded `while is_ok()` loop risks infinite execution if `remove_at` misbehaves on an empty menu
+5. Appends new items: existing files get `rf-{gen}-{idx}` IDs; missing files get `rfe-{gen}-{idx}` IDs (disabled, cannot be clicked); the Clear button gets `rfc-{gen}`
+6. Stores the ordered path list in `RecentPaths` state for click-event dispatch
+
+**Click dispatch:** the `on_menu_event` handler matches `rf-{gen}-{idx}` patterns (not `rfe-` disabled items), looks up `guard.0[idx]` in `RecentPaths`, and emits `open-recent-file` with the path. The frontend's listener calls `loadFile`; on failure it calls `removeFromRecent` + `syncRecentMenu` to prune the stale entry.
+
+---
+
+### Class-based UI Toggle Pattern
+
+**Date:** 2026-05-17 · **Status:** Accepted
+
+#### Context
+
+Several UI elements need to be shown or hidden: the search bar, the TOC panel, the drag-drop overlay. The natural HTML approach is the `hidden` attribute, which the UA stylesheet sets to `display: none`.
+
+#### Problem
+
+WKWebView (macOS) applies the app's author stylesheet *after* the UA stylesheet. If the author stylesheet sets `display: flex` or `display: block` on `#search-bar`, that rule wins over `[hidden] { display: none }` even when the `hidden` attribute is present — the element stays visible.
+
+#### Decision
+
+**Never use the `hidden` attribute for toggleable elements.** Instead:
+
+- Default the element to `display: none` in the author stylesheet
+- Show it by adding a specific class that overrides to the correct display value
+
+```css
+/* Search bar */
+#search-bar { display: none; }
+#search-bar.search-open { display: flex; }
+
+/* TOC panel */
+#toc { display: none; position: fixed; … }
+#toc.toc-visible { display: block; }
+
+/* Drag-drop overlay */
+#drop-overlay { display: none; }
+#drop-overlay.drag-active { display: flex; }
+```
+
+#### Consequences
+
+- All new toggleable elements must follow this pattern — no `hidden` attribute for show/hide
+- The class name documents the semantic state (`search-open`, `toc-visible`, `drag-active`) rather than just a structural concept
+- CSS transitions can be applied to the class selector without fighting UA rules
+- `#app`-level context classes (`.search-active`, `.toc-open`) enable sibling/parent CSS adjustments without JavaScript layout calculations
+
+---
+
+### Async Menu Commands
+
+**Date:** 2026-05-17 · **Status:** Accepted
+
+#### Context
+
+`sync_recent_menu` needs to rebuild the native "Open Recent" submenu dynamically: remove all existing items, create new `MenuItem` objects, and append them. It was initially written as a synchronous Tauri command.
+
+#### Problem
+
+All Tauri menu APIs (`remove_at`, `append`, `MenuItem::with_id`, `PredefinedMenuItem::separator`) internally dispatch to the main thread using `run_main_thread!`. Synchronous Tauri commands execute *on* the main thread. The result is an immediate deadlock: the command is waiting for main-thread operations that are waiting for the command to release the main thread.
+
+#### Decision
+
+**Any Tauri command that calls multiple menu API operations must be `async`.** Async Tauri commands run on a tokio thread pool, allowing main-thread dispatches to complete normally.
+
+```rust
+// WRONG — sync command calling menu APIs deadlocks
+#[tauri::command]
+pub fn sync_recent_menu(app: tauri::AppHandle, ...) -> Result<(), String> { ... }
+
+// CORRECT — async command runs on tokio thread pool
+#[tauri::command]
+pub async fn sync_recent_menu(app: tauri::AppHandle, ...) -> Result<(), String> { ... }
+```
+
+Simpler commands like `sync_theme_menu` (which calls `set_checked` on pre-existing items) remain synchronous because they only issue a single fast dispatch.
+
+#### Consequences
+
+- All future commands that create, remove, or reorder menu items must be `async`
+- Commands that only read menu state or call `set_enabled`/`set_checked` on a single known item may remain synchronous
+- This pattern must be documented in code review guidelines — the deadlock is silent and platform-specific (only manifests when the main thread is the command executor)

@@ -9,8 +9,11 @@ A fast, offline-first desktop markdown viewer with Mermaid diagram rendering and
 - Syntax-highlighted code blocks with dual light/dark themes (Shiki, 100+ languages)
 - Local image rendering via `markdownviewer://` custom protocol (no arbitrary file exposure)
 - File → Open File… (`Cmd+O`), drag-and-drop, Finder double-click, deep links (`markdownviewer:///path`)
+- File → Open Recent — last 10 files, persisted across restarts
 - Live reload when the file changes on disk (FSEvents / ReadDirectoryChangesW)
 - Back/Forward navigation history (`Cmd+[` / `Cmd+]`); relative `.md` link following
+- Floating Table of Contents with scroll-spy (`Cmd+Shift+T`)
+- In-document search with real-time highlighting and match navigation (`Cmd+F`)
 - External link preview tooltip; anchor scroll to headings
 - Light/dark theme that follows the OS, with manual override; FOUC-free startup
 - `.md` / `.markdown` file type association; window state persisted across sessions
@@ -91,11 +94,6 @@ All major technology decisions and their full rationale are in [`docs/architectu
 | [docs/product-summary.md](docs/product-summary.md) | **Shipped** | All features live in the current release; keyboard shortcuts |
 | [docs/unimplemented.md](docs/unimplemented.md) | **Open** | Gaps, P2 quality improvements, full backlog overview (P3–P7), open points, deferred scope |
 | [docs/architecture.md](docs/architecture.md) | **Technical** | System design, technology decisions, security model, IPC reference, rendering pipeline |
-| [docs/P3.md](docs/P3.md) | **P3** | Navigation and discoverability |
-| [docs/P4.md](docs/P4.md) | **P4** | Power viewer features |
-| [docs/P5.md](docs/P5.md) | **P5** | Extended markdown syntax |
-| [docs/P6.md](docs/P6.md) | **P6** | Platform integration and power-user tools |
-| [docs/P7.md](docs/P7.md) | **P7** | Future scope |
 
 ## Lock Files
 

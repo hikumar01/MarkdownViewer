@@ -11,6 +11,9 @@ import { detectTheme, applyThemePreference, getThemePreference } from './events/
 import type { Theme, ThemePreference } from './events/theme'
 import { attachLinkHandlers, setBasePath } from './events/links'
 import { initDragDrop } from './events/drag'
+import { initToc, updateToc, clearToc, toggleToc, isTocVisible } from './events/toc'
+import { initSearch, updateSearchContent, clearSearch, openSearch } from './events/search'
+import { addToRecent, removeFromRecent, clearRecent, syncRecentMenu } from './events/recent'
 
 interface AppState {
   filePath: string | null
@@ -85,7 +88,7 @@ function attachImageHandlers(container: HTMLElement): void {
 
 // --- File loading ---
 
-async function loadFile(path: string): Promise<void> {
+async function loadFile(path: string): Promise<boolean> {
   // Push to history unless we're replaying a history entry (back/forward/reload).
   if (!navigatingHistory) {
     pushHistory(path)
@@ -93,6 +96,7 @@ async function loadFile(path: string): Promise<void> {
   }
 
   state.filePath = path
+  addToRecent(path)
 
   // Normalize to forward-slash separators so lastIndexOf('/') works on Windows
   // where Tauri's canonicalize returns backslash-separated paths.
@@ -126,13 +130,18 @@ async function loadFile(path: string): Promise<void> {
     // Diagrams must be rendered after the HTML is in the DOM so Mermaid can
     // measure containers and produce correctly sized SVGs.
     await renderMermaidBlocks(contentEl)
+    updateToc(contentEl)
+    updateSearchContent(contentEl)
 
     await invoke('set_window_title', { filename: normalPath.split('/').pop()! })
+    syncRecentMenu(path)
+    return true
   } catch (err) {
     await dialogMessage(`Could not open file:\n${path}\n\n${err}`, {
       title: 'Open Failed',
       kind: 'error',
     })
+    return false
   }
 }
 
@@ -159,6 +168,9 @@ function showWelcome(): void {
 
   const contentEl = document.getElementById('content')!
   contentEl.setAttribute('hidden', '')
+  clearToc()
+  clearSearch()
+  syncRecentMenu(null)
 
   invoke('set_window_title', { filename: '' })
 }
@@ -167,9 +179,13 @@ window.addEventListener('DOMContentLoaded', async () => {
   const initialTheme = detectTheme()
   initMermaid(initialTheme)
 
-  // Sync the menu checkmarks with the preference stored in localStorage.
-  // Fire-and-forget — failure just means checkmarks start in default state.
+  initToc()
+  initSearch()
+
+  // Sync menu checkmarks with localStorage on startup.
   invoke('sync_theme_menu', { preference: getThemePreference() }).catch(() => {})
+  invoke('sync_toc_menu', { visible: isTocVisible() }).catch(() => {})
+  syncRecentMenu(null)
 
   // Set up link delegation once — handles anchor scroll, external links, and
   // relative MD file links for all content loaded into #content.
@@ -218,6 +234,27 @@ window.addEventListener('DOMContentLoaded', async () => {
   })
 
   await listen('close-file', () => { if (state.filePath) showWelcome() })
+
+  await listen('find-in-doc', () => openSearch())
+
+  // Recent Files — open file from native menu, or clear the list.
+  await listen<string>('open-recent-file', async ({ payload: path }) => {
+    const ok = await loadFile(path)
+    if (!ok) {
+      removeFromRecent(path)
+      syncRecentMenu(state.filePath)
+    }
+  })
+
+  await listen('clear-recent', () => {
+    clearRecent()
+    syncRecentMenu(state.filePath)
+  })
+
+  await listen('toc-toggle', () => {
+    const next = toggleToc()
+    invoke('sync_toc_menu', { visible: next }).catch(console.error)
+  })
 
   // "open-file" is emitted by the native File menu handler and by OS
   // file-association / single-instance forwarding (both in lib.rs).

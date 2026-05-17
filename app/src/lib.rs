@@ -14,6 +14,12 @@ pub struct WatcherState(pub std::sync::Mutex<Option<notify::RecommendedWatcher>>
 // this once on DOMContentLoaded to recover the path.
 pub struct PendingOpen(pub std::sync::Mutex<Option<String>>);
 
+// Holds the ordered list of recent file paths visible in the "Open Recent" submenu plus a
+// generation counter. Every rebuild increments the counter and embeds it in all menu item IDs
+// (e.g. "rf-3-0") so that re-created items never collide with IDs still registered by Tauri
+// from the previous build.
+pub struct RecentPaths(pub std::sync::Mutex<(Vec<String>, u64)>);
+
 /// Validates a path string from untrusted input (argv, deep links).
 /// Canonicalizes and requires a .md / .markdown extension.
 /// Returns None and silently drops the path on any failure so callers
@@ -55,6 +61,7 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .manage(WatcherState(std::sync::Mutex::new(None)))
         .manage(PendingOpen(std::sync::Mutex::new(None)))
+        .manage(RecentPaths(std::sync::Mutex::new((vec![], 0))))
         .register_uri_scheme_protocol("markdownviewer", protocol::handle)
         .setup(|app| {
             build_menu(app)?;
@@ -88,7 +95,7 @@ pub fn run() {
                         }
                         let _ = app.emit("close-file", ());
                     }
-                    "nav-back" | "nav-forward" => {
+                    "nav-back" | "nav-forward" | "toc-toggle" | "find-in-doc" => {
                         let _ = app.emit(event.id().as_ref(), ());
                     }
                     "theme-system" | "theme-light" | "theme-dark" => {
@@ -110,7 +117,27 @@ pub fn run() {
                         }
                         let _ = app.emit("theme-set", chosen);
                     }
-                    _ => {}
+                    _ => {
+                        let id = event.id().as_ref();
+                        // "rfc-{gen}" — the Clear Recent Files item.
+                        if id.starts_with("rfc-") {
+                            let _ = app.emit("clear-recent", ());
+                        }
+                        // "rf-{gen}-{idx}" — an individual recent-file entry.
+                        // "rfe-{gen}" is the disabled "No recent files" placeholder; skip it.
+                        else if id.starts_with("rf-") && !id.starts_with("rfe-") {
+                            // ID format "rf-{gen}-{idx}": take the third dash-separated segment.
+                            if let Some(idx_str) = id.splitn(3, '-').nth(2) {
+                                if let Ok(idx) = idx_str.parse::<usize>() {
+                                    let state = app.state::<RecentPaths>();
+                                    let guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+                                    if let Some(path) = guard.0.get(idx) {
+                                        let _ = app.emit("open-recent-file", path.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             });
 
@@ -138,6 +165,8 @@ pub fn run() {
             commands::sync_nav_menu,
             commands::open_url,
             commands::get_pending_open,
+            commands::sync_toc_menu,
+            commands::sync_recent_menu,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -188,12 +217,30 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     let open  = MenuItem::with_id(app, "open-file",  "Open File…", true, Some("CmdOrCtrl+O"))?;
     let close = MenuItem::with_id(app, "close-file", "Close",      true, Some("CmdOrCtrl+W"))?;
 
-    let file_menu = Submenu::with_items(app, "File", true, &[&open, &sep()?, &close])?;
+    // "Open Recent" submenu — starts with placeholder; sync_recent_menu rebuilds it on every file open.
+    let recent_empty = MenuItem::with_id(app, "recent-empty", "No recent files", false, None::<&str>)?;
+    let recent_clear = MenuItem::with_id(app, "recent-clear", "Clear Recent Files", false, None::<&str>)?;
+    let recent_sub = Submenu::with_id(app, "recent-files-sub", "Open Recent", true)?;
+    recent_sub.append_items(&[
+        &recent_empty,
+        &sep()?,
+        &recent_clear,
+    ])?;
+
+    let file_menu = Submenu::with_items(app, "File", true, &[
+        &open,
+        &sep()?,
+        &recent_sub,
+        &sep()?,
+        &close,
+    ])?;
 
     // Go menu — Back/Forward start disabled; sync_nav_menu enables them as history grows.
     let nav_back = MenuItem::with_id(app, "nav-back",    "Back",    false, Some("CmdOrCtrl+["))?;
     let nav_fwd  = MenuItem::with_id(app, "nav-forward", "Forward", false, Some("CmdOrCtrl+]"))?;
     let go_menu  = Submenu::with_items(app, "Go", true, &[&nav_back, &nav_fwd])?;
+
+    let find_item = MenuItem::with_id(app, "find-in-doc", "Find in Document…", true, Some("CmdOrCtrl+F"))?;
 
     let edit_menu = Submenu::with_items(app, "Edit", true, &[
         &PredefinedMenuItem::undo(app, None)?,
@@ -203,6 +250,8 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
         &PredefinedMenuItem::copy(app, None)?,
         &PredefinedMenuItem::paste(app, None)?,
         &PredefinedMenuItem::select_all(app, None)?,
+        &sep()?,
+        &find_item,
     ])?;
 
     // Theme submenu — System is checked by default; sync_theme_menu command
@@ -215,6 +264,9 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
         &theme_light,
         &theme_dark,
     ])?;
+
+    // TOC — checked by default; sync_toc_menu updates on startup from localStorage.
+    let toc_toggle = CheckMenuItem::with_id(app, "toc-toggle", "Table of Contents", true, true, Some("CmdOrCtrl+Shift+T"))?;
 
     #[cfg(target_os = "macos")]
     {
@@ -232,6 +284,8 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
 
         let view_menu = Submenu::with_items(app, "View", true, &[
             &PredefinedMenuItem::fullscreen(app, None)?,
+            &sep()?,
+            &toc_toggle,
             &sep()?,
             &theme_sub,
         ])?;
@@ -254,7 +308,7 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
 
     #[cfg(not(target_os = "macos"))]
     {
-        let view_menu = Submenu::with_items(app, "View", true, &[&theme_sub])?;
+        let view_menu = Submenu::with_items(app, "View", true, &[&toc_toggle, &sep()?, &theme_sub])?;
         app.set_menu(Menu::with_items(app, &[&file_menu, &edit_menu, &go_menu, &view_menu])?)?;
     }
 

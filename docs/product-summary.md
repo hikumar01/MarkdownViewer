@@ -27,11 +27,14 @@ Open a file once and the view stays current: MarkdownViewer watches for saves an
 | **Diagrams** | All Mermaid v11 types: flowchart, sequence, class, ER, state, Gantt, git graph, pie, mindmap, timeline, and more |
 | **Code** | Syntax highlighting for 100+ languages via Shiki — VS Code token colors, light and dark palettes |
 | **Images** | Relative-path local images with loading skeleton and broken-image placeholder |
-| **File opening** | Menu (Cmd+O), drag-and-drop, Finder double-click, CLI argument, deep link URL |
+| **File opening** | Menu (Cmd+O), drag-and-drop, Finder double-click, CLI argument, deep link URL, Recent Files submenu |
 | **Live reload** | Automatic re-render on every save — works with any editor, including atomic-save editors (VS Code, Vim, JetBrains) |
 | **Navigation** | Back/Forward history (Cmd+[ / Cmd+]), relative `.md` link following, anchor scroll, external link preview tooltip |
+| **Table of Contents** | Floating TOC panel with scroll-spy; H1–H6 hierarchy; click-to-jump; toggle with Cmd+Shift+T |
+| **In-document Search** | Cmd+F; real-time match highlighting; match count; next/previous navigation; Escape to close |
+| **Recent Files** | Last 10 opened files in File → Open Recent; persists across restarts |
 | **Theme** | Follows OS appearance; manual override to Light, Dark, or System; zero flash on startup or switch |
-| **Persistence** | Window position, size, and theme preference restored on every relaunch |
+| **Persistence** | Window position, size, theme preference, TOC visibility, and recent files restored on every relaunch |
 | **Security** | Fully offline; no telemetry; path traversal guards at every file entry point; strict CSP |
 
 ---
@@ -153,6 +156,70 @@ Navigate your documentation without leaving the app:
 
 ---
 
+### Floating Table of Contents
+
+A collapsible sidebar panel lists all headings (H1–H6) in the current document, with scroll-spy highlighting to show which section is currently in view.
+
+- **Toggle:** View → Table of Contents or `Cmd+Shift+T`
+- **Click to jump:** clicking any TOC entry scrolls to the corresponding heading
+- **Scroll-spy:** the currently visible heading is highlighted automatically as you scroll — only one entry highlighted at a time
+- **Floating overlay:** the panel floats over the document (does not push the layout), positioned top-right
+- **Persistence:** panel visibility is saved in localStorage and restored on relaunch
+- Documents with no headings show an empty panel with a "No headings found" message
+
+> **For engineers:** Headings are extracted from the rendered DOM after each `loadFile` call — not from the markdown AST — by `updateToc()` in `ui/events/toc.ts`. Extraction uses `document.querySelectorAll('.markdown-body h1, h2, h3, h4, h5, h6')` and preserves heading level for visual indentation.
+>
+> Scroll-spy uses `IntersectionObserver` with `rootMargin: '-10% 0px -85% 0px'`, which creates a horizontal band near the top of the viewport. Only the heading that crosses into this band is marked active — at most one entry highlighted at a time.
+>
+> The TOC panel visibility is class-based (`#toc.toc-visible`) rather than the HTML `hidden` attribute. WKWebView's author stylesheet overrides the UA-level `[hidden] { display: none }`, making attribute-based toggling unreliable. The `#app.toc-open` class adjusts the document margin when the TOC is open.
+>
+> The native menu checkmark (View → Table of Contents) is synced via the `sync_toc_menu` Tauri command on startup and after each toggle. `sync_toc_menu` uses `menu.get("toc-toggle")` which reliably finds `CheckMenuItem` nodes.
+
+---
+
+### In-document Search
+
+A floating search bar (`Cmd+F`) finds and highlights text within the rendered document in real time.
+
+- **Open:** `Cmd+F` or Edit → Find in Document — positioned top-right, floating above content
+- **Real-time highlighting:** all matches are highlighted as you type; a count shows as "3 of 12 matches"
+- **Navigate matches:** `Enter` or `↓` for next, `Shift+Enter` or `↑` for previous; current match has a distinct accent color, others have a lighter tint
+- **Close:** `Escape` or click outside — clears all highlights
+- **Case-insensitive** by default; matches inside headings, tables, code blocks, and callouts
+- Mermaid diagram SVG content is excluded (it is not human-readable text)
+- No results: the bar shows "No matches" — no error thrown
+
+> **For engineers:** Search is implemented in `ui/events/search.ts` using the `mark.js` library. `mark.js` handles partial matches that span DOM node boundaries cleanly — unlike `window.find()`, which cannot count matches or style them individually.
+>
+> All marks are applied to the `.markdown-body` container via a shared `Mark` instance. Navigation collects all `.mark` elements and calls `scrollIntoView` on the active one. The search bar is shown and hidden via a CSS class (`#search-bar.search-open`), not the `hidden` attribute, for WKWebView compatibility.
+>
+> `Cmd+F` is handled in the renderer process as a `keydown` listener — no global shortcut registration needed, since search only applies to the focused window. The `find-in-doc` Tauri event is also emitted by the Edit → Find in Document menu item.
+>
+> When the search bar is open, an `#app.search-active` class shifts the TOC panel down by `3.5rem` to prevent overlap.
+
+---
+
+### Recent Files
+
+The last 10 opened files are available under File → Open Recent for quick access.
+
+- **Most-recently-used first:** the most recently opened file appears at the top of the submenu
+- **Shortened paths:** each entry shows the filename with an abbreviated parent path (e.g., `README.md  ~/Documents/project`)
+- **Missing files:** entries for files that no longer exist are shown grayed out (disabled); clicking them would show "File not found" and remove the entry from the list
+- **Current file excluded:** the currently open file is not shown in the recent list while it is already open
+- **Clear:** "Clear Recent Files" at the bottom of the submenu clears the entire list
+- **Persists:** the list survives app restarts via localStorage
+
+> **For engineers:** The list is stored as a JSON array in `localStorage['markview-recent']`. `ui/events/recent.ts` owns all read/write operations — `addToRecent`, `removeFromRecent`, `clearRecent`, and `syncRecentMenu`.
+>
+> The native "Open Recent" submenu is rebuilt by the `sync_recent_menu` Tauri command (in `commands.rs`) on every file open, file close, and startup. This command is `async` — all Tauri menu APIs (`remove_at`, `append`, `MenuItem::with_id`) dispatch to the main thread internally via `run_main_thread!`. A sync command running on the main thread would deadlock waiting for itself.
+>
+> Menu item IDs embed a generation counter: `rf-{gen}-{idx}` for existing files, `rfc-{gen}` for the Clear button. Every rebuild increments the counter so re-created items never collide with IDs still registered in Tauri's global ID registry from the previous build.
+>
+> Clicking an existing entry emits `open-recent-file` from Rust → frontend. If `loadFile` fails (stale path), `removeFromRecent` prunes the entry and `syncRecentMenu` rebuilds the native submenu.
+
+---
+
 ### Light / Dark Theme
 
 MarkdownViewer follows the OS appearance setting by default and switches instantly — no restart, no flicker. Prose, code blocks, Mermaid diagrams, and all UI chrome update together.
@@ -222,7 +289,7 @@ flowchart TB
             direction TB
             main["main.ts — bootstrap · history · events"]
             renderer["renderer/ — unified pipeline · Mermaid · Shiki"]
-            ev["events/ — theme · links · drag-drop"]
+            ev["events/ — theme · links · drag-drop · toc · search · recent"]
             css["styles/app.css — tokens · layouts · states"]
         end
         subgraph BE["Rust Backend · Tauri v2"]
@@ -262,7 +329,10 @@ flowchart TB
 | `ui/events/theme.ts` | Theme detection, preference persistence, OS change listener |
 | `ui/events/links.ts` | Click delegation — anchor scroll, external open, MD navigation |
 | `ui/events/drag.ts` | Native drag-drop overlay and file-open handler |
-| `ui/styles/app.css` | App chrome, image states, Mermaid states, drag overlay, link tooltip |
+| `ui/events/toc.ts` | TOC panel — build from DOM, scroll-spy via IntersectionObserver, toggle, persistence |
+| `ui/events/search.ts` | In-document search — mark.js integration, match navigation, open/close |
+| `ui/events/recent.ts` | Recent files — localStorage read/write, native submenu sync |
+| `ui/styles/app.css` | App chrome, image states, Mermaid states, drag overlay, TOC panel, search bar |
 | `app/src/lib.rs` | Tauri app setup, menu construction, event routing |
 | `app/src/commands.rs` | All `#[tauri::command]` handlers |
 | `app/src/protocol.rs` | `markdownviewer://` URI scheme — secure local file serving |
@@ -290,8 +360,10 @@ All shortcuts available in the current release.
 | `Cmd+W` | Close current file |
 | `Cmd+[` | Navigate back |
 | `Cmd+]` | Navigate forward |
+| `Cmd+F` | Find in document |
+| `Cmd+Shift+T` | Toggle Table of Contents |
 
-For planned shortcuts (Cmd+E, Cmd+F, Cmd+K, and more), see [Planned Keyboard Shortcuts](./unimplemented.md#planned-keyboard-shortcuts).
+For planned shortcuts (Cmd+K, Cmd++/−/0, and more), see [Planned Keyboard Shortcuts](./unimplemented.md#planned-keyboard-shortcuts).
 
 ---
 
