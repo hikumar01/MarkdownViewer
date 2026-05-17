@@ -19,6 +19,14 @@
   </head>
   <body>
     <div id="app">
+      <div id="search-bar">
+        <input id="search-input" type="search" placeholder="Find in document…" autocomplete="off" spellcheck="false" />
+        <span id="search-count" aria-live="polite"></span>
+        <button id="search-prev" class="search-btn" title="Previous (Shift+Enter)">↑</button>
+        <button id="search-next" class="search-btn" title="Next (Enter)">↓</button>
+        <button id="search-close" class="search-btn" title="Close (Escape)">✕</button>
+      </div>
+
       <!-- hidden until a file is loaded; .markdown-body activates github-markdown-css -->
       <main id="content" class="markdown-body" hidden></main>
 

@@ -53,7 +53,7 @@ export async function initDragDrop(
     }
 
     const replace = await confirm(
-      `Open "${path.split('/').pop()}" and close the current document?`,
+      `Open "${path.replace(/\\/g, '/').split('/').pop()}" and close the current document?`,
       { title: 'Open Dropped File', kind: 'info' },
     )
     if (replace) onOpen(path)

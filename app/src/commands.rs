@@ -1,6 +1,7 @@
+use std::path::Path;
 use notify::{EventKind, RecursiveMode, Watcher};
 use tauri::Emitter;
-use tauri::menu::MenuItemKind;
+use tauri::menu::{MenuItem, MenuItemKind, PredefinedMenuItem};
 
 use crate::WatcherState;
 
@@ -133,12 +134,144 @@ pub fn open_url(url: String) -> Result<(), String> {
     open::that_detached(&url).map_err(|e| e.to_string())
 }
 
+/// Syncs the View → Table of Contents checkmark with the frontend's localStorage value.
+/// Called once on startup and after each toggle so the menu reflects current state.
+#[tauri::command]
+pub fn sync_toc_menu(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
+    let Some(menu) = app.menu() else { return Ok(()) };
+    if let Some(MenuItemKind::Check(item)) = menu.get("toc-toggle") {
+        item.set_checked(visible).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Pops the file path queued during cold launch (before the WebView was ready).
 /// Returns Some(path) once and None on every subsequent call.
 /// The frontend calls this on DOMContentLoaded after registering its open-file listener.
 #[tauri::command]
 pub fn get_pending_open(state: tauri::State<'_, crate::PendingOpen>) -> Option<String> {
     state.0.lock().unwrap_or_else(|p| p.into_inner()).take()
+}
+
+/// Rebuilds the "Open Recent" submenu from the list the frontend keeps in localStorage.
+/// Called on startup, on every file open, and on close. Filters out the currently
+/// open file so it is never listed as a recent file while it is already open.
+/// Missing files are shown grayed-out (disabled); existing files are enabled.
+///
+/// Must be `async`: Tauri menu operations (remove_at, append, MenuItem::with_id) all
+/// dispatch internally to the main thread via run_main_thread!. Sync commands execute
+/// on the main thread, so any menu call would deadlock waiting for itself. Async commands
+/// run on a tokio thread, allowing the main-thread dispatches to complete.
+#[tauri::command]
+pub async fn sync_recent_menu(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::RecentPaths>,
+    paths: Vec<String>,
+    current: Option<String>,
+) -> Result<(), String> {
+    // Filter out the currently open file, keep at most 10 entries.
+    let filtered: Vec<String> = paths
+        .iter()
+        .filter(|p| Some(p.as_str()) != current.as_deref())
+        .take(10)
+        .cloned()
+        .collect();
+
+    // Increment the generation counter. Every rebuild embeds the generation in all
+    // item IDs (e.g. "rf-3-0", "rfc-3") so re-created items never collide with IDs
+    // that Tauri may still have registered from the previous build.
+    let gen = {
+        let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.1 += 1;
+        guard.1
+    };
+
+    // Walk the menu tree to find the "Open Recent" submenu by its ID.
+    // We use manual traversal (same pattern as sync_nav_menu) rather than menu.get()
+    // because get() does not reliably locate Submenu nodes in all Tauri v2 builds.
+    let Some(menu) = app.menu() else { return Ok(()) };
+    let Ok(top_items) = menu.items() else { return Ok(()) };
+    let mut found_sub = None;
+    'search: for top in &top_items {
+        let MenuItemKind::Submenu(top_sub) = top else { continue };
+        let Ok(children) = top_sub.items() else { continue };
+        for child in children {
+            if let MenuItemKind::Submenu(sub) = child {
+                if sub.id().as_ref() == "recent-files-sub" {
+                    found_sub = Some(sub);
+                    break 'search;
+                }
+            }
+        }
+    }
+    let Some(sub) = found_sub else { return Ok(()) };
+
+    // Snapshot the current item count, then remove exactly that many items.
+    // Unbounded while-is_ok() would loop forever if remove_at() has a bug on empty menus;
+    // bounded removal is safe regardless.
+    let item_count = sub.items().map(|v| v.len()).unwrap_or(0);
+    for _ in 0..item_count {
+        let _ = sub.remove_at(0);
+    }
+
+    // Paths for existing files, ordered by menu index, for event dispatch.
+    let mut menu_paths: Vec<String> = Vec::new();
+
+    if filtered.is_empty() {
+        let empty = MenuItem::with_id(&app, format!("rfe-{gen}"), "No recent files", false, None::<&str>)
+            .map_err(|e| e.to_string())?;
+        sub.append(&empty).map_err(|e| e.to_string())?;
+    } else {
+        for path in &filtered {
+            let name = Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(path.as_str());
+            let parent = Path::new(path)
+                .parent()
+                .and_then(|p| p.to_str())
+                .unwrap_or("");
+            let short = shorten_path(parent);
+            let label = if short.is_empty() { name.to_string() } else { format!("{name}  {short}") };
+            let exists = Path::new(path).is_file();
+            // Existing files get an indexed "rf-{gen}-{i}" ID for event dispatch.
+            // Missing files (shown grayed-out) get a "rfe-{gen}-{i}" ID; disabled items
+            // cannot be clicked so they never fire a menu event.
+            let id = if exists {
+                let idx = menu_paths.len();
+                menu_paths.push(path.clone());
+                format!("rf-{gen}-{idx}")
+            } else {
+                format!("rfe-{gen}-{}", menu_paths.len() + filtered.len())
+            };
+            let item = MenuItem::with_id(&app, id, label, exists, None::<&str>)
+                .map_err(|e| e.to_string())?;
+            sub.append(&item).map_err(|e| e.to_string())?;
+        }
+        sub.append(&PredefinedMenuItem::separator(&app).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    }
+
+    let has_items = !filtered.is_empty();
+    let clear = MenuItem::with_id(&app, format!("rfc-{gen}"), "Clear Recent Files", has_items, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    sub.append(&clear).map_err(|e| e.to_string())?;
+
+    state.0.lock().unwrap_or_else(|p| p.into_inner()).0 = menu_paths;
+
+    Ok(())
+}
+
+fn shorten_path(path: &str) -> String {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .and_then(|h| h.into_string().ok());
+    if let Some(home) = home {
+        if path.starts_with(&home) {
+            return format!("~{}", &path[home.len()..]);
+        }
+    }
+    path.to_string()
 }
 
 /// Syncs the View → Theme menu checkmarks with the preference stored in the
