@@ -300,7 +300,7 @@ def main() -> int:
     print(_c("36", "    pnpm dev"))
     print()
     print("  Build for distribution:")
-    print(_c("36", "    pnpm build"))
+    print(_c("36", "    pnpm bundle"))
     print()
     return 0
 

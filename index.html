@@ -4,6 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MarkdownViewer</title>
+    <!-- Set html.dark before any CSS renders to prevent a flash of light-themed
+         content on startup. Reads the persisted theme preference from
+         localStorage (set by theme.ts) so manual overrides survive reload.
+         Must be an inline script (not a module) so it runs synchronously
+         during HTML parsing, before the first paint. -->
+    <script>
+      var _p = localStorage.getItem('markview-theme')
+      var _dark = _p === 'dark' ||
+        (_p !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+      if (_dark) document.documentElement.classList.add('dark')
+    </script>
     <script type="module" src="/ui/main.ts"></script>
   </head>
   <body>
