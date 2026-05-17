@@ -35,9 +35,7 @@ body {
 #content {
   flex: 1;
   overflow-y: auto;
-  padding: 2rem 2rem 4rem;
-  max-width: 960px;
-  margin: 0 auto;
+  padding: 2rem 1.5rem 4rem;
   width: 100%;
 }
 
@@ -64,16 +62,43 @@ body {
   color: var(--text-muted);
 }
 
-.mermaid-error {
-  border: 1px solid #cf222e;
-  border-radius: 6px;
-  padding: 0.75rem;
-  background: #ffebe9;
+pre.mermaid-source {
+  position: relative;
+  min-height: 3.5rem;
 }
 
-html.dark .mermaid-error {
-  background: #2d1b1e;
-  border-color: #f85149;
+pre.mermaid-source code {
+  visibility: hidden;
+}
+
+pre.mermaid-source::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: calc(50% - 1.4em);
+  width: 0.5em;
+  height: 0.5em;
+  margin-top: -0.25em;
+  border-radius: 50%;
+  animation: mermaid-loading 1.2s infinite ease-in-out;
+}
+
+@keyframes mermaid-loading {
+  0%, 100% {
+    background: var(--text-muted);
+    box-shadow: 1.4em 0 0 color-mix(in srgb, var(--text-muted) 25%, transparent),
+                2.8em 0 0 color-mix(in srgb, var(--text-muted) 25%, transparent);
+  }
+  33% {
+    background: color-mix(in srgb, var(--text-muted) 25%, transparent);
+    box-shadow: 1.4em 0 0 var(--text-muted),
+                2.8em 0 0 color-mix(in srgb, var(--text-muted) 25%, transparent);
+  }
+  66% {
+    background: color-mix(in srgb, var(--text-muted) 25%, transparent);
+    box-shadow: 1.4em 0 0 color-mix(in srgb, var(--text-muted) 25%, transparent),
+                2.8em 0 0 var(--text-muted);
+  }
 }
 
 figure.mermaid-diagram {
@@ -81,6 +106,78 @@ figure.mermaid-diagram {
   justify-content: center;
   margin: 1rem 0;
 }
+
+/* ── Image loading ─────────────────────────────────────────────────── */
+
+.img-wrapper {
+  display: block;
+  margin-inline: auto;
+  max-width: 100%;
+}
+
+.img-wrapper.img-loading {
+  position: relative;
+  min-height: 120px;
+  background: color-mix(in srgb, var(--border) 30%, transparent);
+  border-radius: 6px;
+}
+
+.img-wrapper.img-loading > img {
+  visibility: hidden;
+  width: 100%;
+  min-height: 120px;
+}
+
+.img-wrapper.img-loading::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: calc(50% - 1.4em);
+  width: 0.5em;
+  height: 0.5em;
+  margin-top: -0.25em;
+  border-radius: 50%;
+  animation: mermaid-loading 1.2s infinite ease-in-out;
+}
+
+/* ── Broken thumbnail — images and mermaid errors ─────────────────── */
+
+.img-broken,
+figure.mermaid-broken {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-width: 160px;
+  min-height: 100px;
+  max-width: 100%;
+  margin: 1rem auto;
+  padding: 1.25rem;
+  background: color-mix(in srgb, var(--border) 25%, transparent);
+  border: 1.5px dashed var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+/* Broken-image icon via CSS mask so it inherits --text-muted */
+.img-broken::before,
+figure.mermaid-broken::before {
+  content: '';
+  display: block;
+  width: 2rem;
+  height: 2rem;
+  background: var(--text-muted);
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='3' y='3' width='18' height='18' rx='2' fill='none' stroke='black' stroke-width='2'/%3E%3Ccircle cx='8' cy='8' r='1.75' fill='black'/%3E%3Cpath d='M3 16 8.5 10 12.5 14 15.5 11 21 16' fill='none' stroke='black' stroke-width='1.75' stroke-linejoin='round'/%3E%3Cline x1='3' y1='21' x2='21' y2='3' stroke='black' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E");
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-mode: alpha;
+}
+
+.img-broken::after       { content: 'Image not found'; }
+figure.mermaid-broken::after { content: 'Diagram error'; }
 
 #content img {
   display: block;
@@ -91,6 +188,31 @@ figure.mermaid-diagram {
 #content svg {
   display: block;
   margin-inline: auto;
+}
+
+/* ── Markdown text overflow ────────────────────────────────────────── */
+
+/* Code blocks: scroll horizontally rather than overflow the viewport. */
+#content pre {
+  overflow-x: auto;
+}
+
+/* Tables: wrap in a scrollable block so wide tables don't break layout. */
+#content .markdown-body table,
+#content table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+/* Long words / URLs without whitespace: break rather than overflow. */
+#content p,
+#content li,
+#content blockquote,
+#content td,
+#content th {
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 /* Shiki dual-theme: activate the dark palette when html.dark is set. */

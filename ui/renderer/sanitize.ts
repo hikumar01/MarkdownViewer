@@ -24,7 +24,7 @@ export const sanitizeOptions: Options = {
     // Shiki inlines all syntax token colors as `style` on <span> elements and
     // background colors as `style` on <pre>. Allow only on these two tags.
     span: [...elem('span'), 'style'],
-    pre:  [...elem('pre'),  'style'],
+    pre:  [...elem('pre'),  'style', 'className'],
 
     // Allow id on headings only — used for in-page anchor navigation.
     h1: [...elem('h1'), 'id'],

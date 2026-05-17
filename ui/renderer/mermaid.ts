@@ -1,5 +1,4 @@
 import mermaid from 'mermaid'
-import DOMPurify from 'dompurify'
 
 // Running counter for unique mermaid render IDs within a session. A simple
 // counter is used rather than a content hash because Mermaid's cache is reset
@@ -14,10 +13,41 @@ export function initMermaid(theme: 'default' | 'dark'): void {
     theme,
     // WHY securityLevel 'loose' — Mermaid's default 'strict' mode wraps output
     // in an iframe which prevents CSS theming and breaks layout. 'loose' outputs
-    // inline SVG. The SVG is sanitized with DOMPurify (SVG profile) immediately
-    // after render before being written to the DOM.
+    // inline SVG. The SVG is sanitized immediately after render before DOM insertion.
     securityLevel: 'loose',
   })
+}
+
+// WHY a custom DOM sanitizer instead of DOMPurify:
+// Mermaid v11 renders node labels as <foreignObject><div><span><p> inside the
+// SVG. DOMPurify's namespace validation removes HTML-namespace elements
+// (div/span/p) that are children of SVG-namespace foreignObject, regardless of
+// ADD_TAGS or ADD_ATTR options — this leaves every node box empty. A DOM-based
+// walk avoids all namespace-check stripping: we parse once via innerHTML (which
+// correctly switches to HTML-content mode inside foreignObject per the HTML5
+// spec), then remove only the actual threats in-place before appending.
+function sanitizeSvgFragment(svgString: string): DocumentFragment {
+  const tmp = document.createElement('div')
+  tmp.innerHTML = svgString
+
+  // Remove script elements entirely.
+  for (const el of Array.from(tmp.querySelectorAll('script'))) el.remove()
+
+  // Strip event-handler attributes (on*) and javascript: URL values.
+  for (const el of Array.from(tmp.querySelectorAll('*'))) {
+    for (const attr of Array.from(el.attributes)) {
+      if (
+        /^on\w/i.test(attr.name) ||
+        /^javascript:/i.test(attr.value.trimStart())
+      ) {
+        el.removeAttribute(attr.name)
+      }
+    }
+  }
+
+  const frag = document.createDocumentFragment()
+  while (tmp.firstChild) frag.appendChild(tmp.firstChild)
+  return frag
 }
 
 export async function renderMermaidBlocks(container: HTMLElement): Promise<void> {
@@ -42,18 +72,17 @@ export async function renderMermaidBlocks(container: HTMLElement): Promise<void>
     try {
       const { svg } = await mermaid.render(id, source)
 
-      // Sanitize the SVG with DOMPurify's SVG profile before DOM insertion.
-      // securityLevel:'loose' outputs inline SVG that may contain <script> or
-      // event-handler attributes from a malicious diagram source.
-      const cleanSvg = DOMPurify.sanitize(svg, {
-        USE_PROFILES: { svg: true, svgFilters: true },
-      })
+      const cleanFragment = sanitizeSvgFragment(svg)
+
+      if (!cleanFragment.firstChild) {
+        throw new Error('SVG was empty after sanitization — diagram may use unsupported elements')
+      }
 
       const figure = document.createElement('figure')
       figure.className = 'mermaid-diagram'
       figure.setAttribute('role', 'img')
       figure.setAttribute('aria-label', 'Mermaid diagram')
-      figure.innerHTML = cleanSvg
+      figure.appendChild(cleanFragment)
 
       pre.replaceWith(figure)
     } catch (err: unknown) {
@@ -64,22 +93,15 @@ export async function renderMermaidBlocks(container: HTMLElement): Promise<void>
             ? String((err as { str: unknown }).str)
             : String(err)
 
-      const errorDiv = document.createElement('div')
-      errorDiv.className = 'mermaid-error'
+      console.error('[mermaid] render failed:', message, '\nsource:', source)
 
-      const msgP = document.createElement('p')
-      msgP.className = 'mermaid-error__message'
-      msgP.textContent = message
-
-      const code = document.createElement('code')
-      code.textContent = source
-      const sourcePre = document.createElement('pre')
-      sourcePre.className = 'mermaid-error__source'
-      sourcePre.appendChild(code)
-
-      errorDiv.appendChild(msgP)
-      errorDiv.appendChild(sourcePre)
-      pre.replaceWith(errorDiv)
+      // TODO: render the error message as visible inline text and include the
+      // raw source in a scrollable <code> block below it. Currently the message
+      // is only in the title tooltip. See docs/requirements/unimplemented.md#mermaid-error-display.
+      const broken = document.createElement('figure')
+      broken.className = 'mermaid-broken'
+      broken.title = message
+      pre.replaceWith(broken)
     }
   }
 }
