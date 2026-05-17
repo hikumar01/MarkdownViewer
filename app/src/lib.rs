@@ -54,6 +54,9 @@ pub fn run() {
                 match event.id().as_ref() {
                     "open-file" => {
                         let handle = app.clone();
+                        // TODO: accept the current file path from the frontend so the
+                        // dialog can start in that directory (.set_directory()).
+                        // See docs/requirements/unimplemented.md#open-file-gaps.
                         app.dialog()
                             .file()
                             .add_filter("Markdown", &["md", "markdown"])

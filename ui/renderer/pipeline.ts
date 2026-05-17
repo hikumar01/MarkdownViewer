@@ -8,41 +8,43 @@ import rehypeShiki from '@shikijs/rehype'
 import rehypeStringify from 'rehype-stringify'
 import { visit } from 'unist-util-visit'
 import type { Plugin } from 'unified'
-import type { Root as MdastRoot, Code } from 'mdast'
 import type { Root as HastRoot, Element } from 'hast'
 import { sanitizeOptions } from './sanitize'
 
 // ---------------------------------------------------------------------------
-// remarkExtractMermaid
+// rehypeExtractMermaid
 // ---------------------------------------------------------------------------
 
-// WHY this plugin runs before remark-rehype: Shiki has no mermaid grammar and
-// would error or produce garbage if it encountered a mermaid code block.
+// WHY this is a rehype plugin (not a remark plugin): the mdast-util-to-hast
+// `applyData` path (hName/hProperties/hChildren on MDAST nodes) wraps rather
+// than replaces the default code handler's <pre>, producing <pre><pre><code>>
+// double-nesting. Working at the HAST level after remarkRehype avoids this
+// entirely — we find the <pre><code class="language-mermaid"> that remarkRehype
+// already produced, strip the language class, and add mermaid-source to the <pre>.
 //
-// WHY we use hast data properties instead of `{ type: 'html' }` raw nodes:
-// Using `node.data.hName/hProperties/hChildren` instructs remarkRehype to emit a
-// proper HAST element — <pre class="mermaid-source"> — directly, without going
-// through the raw-node path. This avoids rehype-raw parsing the mermaid source as
-// HTML (it's not HTML), and means the element passes through rehypeSanitize as a
-// normal <pre>/<code> pair. node.value is placed as a text node so rehype-stringify
-// escapes the content automatically; no manual escaping needed.
-const remarkExtractMermaid: Plugin<[], MdastRoot> = () => {
-  return (tree: MdastRoot): void => {
-    visit(tree, 'code', (node: Code) => {
-      if (node.lang !== 'mermaid') return
+// WHY placement after rehypeRaw: rehypeRaw can materialise raw-HTML code blocks;
+// processing after it ensures we catch those too.
+//
+// WHY Shiki never sees mermaid blocks: by the time rehypeShiki runs, the <pre>
+// has class="mermaid-source" (not "language-mermaid"), so Shiki ignores it.
+const rehypeExtractMermaid: Plugin<[], HastRoot> = () => {
+  return (tree: HastRoot): void => {
+    visit(tree, 'element', (node: Element) => {
+      if (node.tagName !== 'pre') return
+      const code = node.children.find(
+        (child): child is Element =>
+          child.type === 'element' && child.tagName === 'code',
+      )
+      if (!code) return
+      const classes = (code.properties?.className as string[] | undefined) ?? []
+      if (!classes.includes('language-mermaid')) return
 
-      node.data = {
-        hName: 'pre',
-        hProperties: { className: ['mermaid-source'] },
-        hChildren: [
-          {
-            type: 'element' as const,
-            tagName: 'code',
-            properties: {},
-            children: [{ type: 'text' as const, value: node.value }],
-          },
-        ],
+      // Move the mermaid marker up to <pre>, remove it from <code>.
+      code.properties = {
+        ...code.properties,
+        className: classes.filter((c) => c !== 'language-mermaid'),
       }
+      node.properties = { ...node.properties, className: ['mermaid-source'] }
     })
   }
 }
@@ -122,15 +124,17 @@ const rehypeResolveImages: Plugin<[], HastRoot> = () => {
 const processor = unified()
   .use(remarkParse)
   .use(remarkGfm)
-  .use(remarkExtractMermaid)
   // allowDangerousHtml: true lets raw `html` nodes from author-written HTML in
   // markdown survive as raw HAST nodes into the next step (rehype-raw).
   .use(remarkRehype, { allowDangerousHtml: true })
   // rehype-raw parses raw HAST nodes (from inline HTML in markdown) into proper
   // HAST elements so rehypeSanitize can sanitize them rather than silently drop them.
-  // WHY this placement: after remarkRehype but before rehypeResolveImages so that
-  // <img> tags written as raw HTML are also caught by the image resolver.
+  // WHY this placement: after remarkRehype but before rehypeExtractMermaid so that
+  // <img> tags and code blocks written as raw HTML are also caught.
   .use(rehypeRaw)
+  // Promote <pre><code class="language-mermaid"> → <pre class="mermaid-source"><code>
+  // so Shiki skips it and renderMermaidBlocks() can find it by class.
+  .use(rehypeExtractMermaid)
   .use(rehypeResolveImages)
   // Sanitize BEFORE Shiki: Shiki runs on code elements that sanitize has
   // already vetted. Shiki's style= output on <span>/<pre> is unsanitized but

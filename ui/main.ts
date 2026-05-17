@@ -16,6 +16,30 @@ interface AppState {
 
 const state: AppState = { filePath: null }
 
+function attachImageHandlers(container: HTMLElement): void {
+  for (const img of container.querySelectorAll<HTMLImageElement>('img')) {
+    const wrapper = document.createElement('div')
+    wrapper.className = 'img-wrapper img-loading'
+    img.parentNode!.insertBefore(wrapper, img)
+    wrapper.appendChild(img)
+
+    const onLoad = (): void => wrapper.classList.remove('img-loading')
+    const onError = (): void => {
+      const broken = document.createElement('div')
+      broken.className = 'img-broken'
+      broken.title = img.src
+      wrapper.replaceWith(broken)
+    }
+
+    if (img.complete) {
+      img.naturalWidth > 0 ? onLoad() : onError()
+    } else {
+      img.addEventListener('load', onLoad, { once: true })
+      img.addEventListener('error', onError, { once: true })
+    }
+  }
+}
+
 async function loadFile(path: string): Promise<void> {
   state.filePath = path
 
@@ -25,6 +49,9 @@ async function loadFile(path: string): Promise<void> {
 
   // Run watch and read concurrently — both are independent IPC calls.
   // watch_file failure is non-fatal: the file renders but won't auto-reload.
+  // TODO: wrap invoke('read_file') in try-catch and show a dialogMessage on
+  // failure (permissions error, file deleted between open and read, etc.).
+  // See docs/requirements/unimplemented.md#open-file-gaps.
   const [content] = await Promise.all([
     invoke<string>('read_file', { path }),
     invoke('watch_file', { path }).catch(() => {}),
@@ -40,6 +67,7 @@ async function loadFile(path: string): Promise<void> {
   // Final DOMPurify pass as defense-in-depth: rehypeSanitize already cleaned
   // the HTML, but this catches any edge case from rehype-raw or plugin bugs.
   contentEl.innerHTML = DOMPurify.sanitize(html)
+  attachImageHandlers(contentEl)
   contentEl.removeAttribute('hidden')
 
   const welcomeEl = document.getElementById('welcome')!

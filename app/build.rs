@@ -42,9 +42,6 @@ fn generate_icons() {
 
 fn gen_icns() {
     let dest = icons_dir().join("icon.icns");
-    if dest.exists() {
-        return;
-    }
 
     use icns::{IconFamily, IconType, Image, PixelFormat};
 
@@ -80,9 +77,6 @@ fn gen_icns() {
 
 fn gen_ico() {
     let dest = icons_dir().join("icon.ico");
-    if dest.exists() {
-        return;
-    }
 
     let mut dir = ico::IconDir::new(ico::ResourceType::Icon);
 
@@ -107,9 +101,6 @@ fn gen_pngs() {
     // 128x128@2x is 256 physical pixels stored under the @2x name convention.
     for (size, name) in [(32u32, "32x32.png"), (128, "128x128.png"), (256, "128x128@2x.png")] {
         let dest = dir.join(name);
-        if dest.exists() {
-            continue;
-        }
         // tiny_skia's Pixmap writes PNG natively — no extra image crate needed.
         let rgba = render_rgba(size);
         let pixmap = resvg::tiny_skia::Pixmap::from_vec(
