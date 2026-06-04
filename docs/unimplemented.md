@@ -1,335 +1,22 @@
 # Unimplemented — Gaps and Open Work
 
-This file tracks features that are not yet implemented, open design questions, and backlog items. Items are sorted by decreasing priority.
-
-For the full implemented baseline, see [product-summary.md](product-summary.md).
+This file tracks features that are not yet implemented, open design questions, and backlog items. Implemented behavior and current security guarantees live in [product-summary.md](product-summary.md) and [architecture.md](architecture.md); this file is intentionally forward-looking.
 
 ---
 
 ## Table of Contents
 
-1. [Mermaid Error Display](#mermaid-error-display)
-2. [Open File Gaps](#open-file-gaps)
-3. [App Menubar Structure](#menubar)
-4. [Empty State](#empty-state)
-5. [App Lifecycle](#app-lifecycle)
-6. [Callouts](#callouts)
-7. [Code Block Copy Button](#copy-button)
-8. [Debounced Re-render](#debounced-rerender)
-9. [Scroll Position Preservation](#scroll-preservation)
-10. [Image Captions](#image-captions)
-11. [Image Sizing](#image-sizing)
-12. [Status Bar](#status-bar)
-13. [Backlog Overview](#backlog-overview)
-14. [Planned Keyboard Shortcuts](#planned-keyboard-shortcuts)
-15. [Open Points](#open-points)
-16. [Deferred Scope](#deferred-scope)
-17. [macOS Proxy Icon](#macos-proxy-icon)
-
----
-
-## Mermaid Error Display
-
-### What's implemented
-
-- A `figure.mermaid-broken` placeholder replaces the diagram on error
-- CSS: dashed border, broken-image icon, "Diagram error" label
-- Error message is set as the `title` attribute (visible as a hover tooltip)
-- Error is logged to DevTools console
-
-### What's missing
-
-**1. Visible inline error message**
-
-The Mermaid error string (e.g., `"Parse error on line 3: Unexpected token"`) is only in a tooltip. It should be visible as text in the error block.
-
-**2. Raw source code block**
-
-The diagram source that failed to parse should be shown in a scrollable `<code>` block below the error message, so the user can see and fix the syntax error without switching to an editor.
-
-**3. Empty diagram handling**
-
-An empty ` ```mermaid ` block (no source text) may throw a Mermaid error instead of showing a neutral "empty diagram" placeholder. This needs to be checked and handled as a special case.
-
-### How to implement
-
-In `ui/renderer/mermaid.ts`, in the `catch` block, replace the minimal broken figure with a richer error element:
-
-```typescript
-const broken = document.createElement('figure')
-broken.className = 'mermaid-broken'
-
-const icon = document.createElement('span')
-icon.className = 'mermaid-broken-icon'   // CSS ::before handles the icon
-
-const msg = document.createElement('p')
-msg.className = 'mermaid-broken-message'
-msg.textContent = message
-
-const sourceBlock = document.createElement('pre')
-sourceBlock.className = 'mermaid-broken-source'
-const code = document.createElement('code')
-code.textContent = source
-sourceBlock.appendChild(code)
-
-broken.appendChild(icon)
-broken.appendChild(msg)
-broken.appendChild(sourceBlock)
-pre.replaceWith(broken)
-```
-
-For the empty-block case, add a guard before `mermaid.render`:
-
-```typescript
-if (!source.trim()) {
-  const empty = document.createElement('figure')
-  empty.className = 'mermaid-empty'
-  pre.replaceWith(empty)
-  continue
-}
-```
-
-CSS additions needed in `app.css`:
-
-```css
-.mermaid-broken-message {
-  font-size: 0.8rem;
-  color: var(--text-muted);
-  text-align: center;
-}
-
-.mermaid-broken-source {
-  width: 100%;
-  max-height: 8rem;
-  overflow: auto;
-  font-size: 0.75rem;
-  background: color-mix(in srgb, var(--border) 15%, transparent);
-  border-radius: 4px;
-  padding: 0.5rem;
-  text-align: left;
-}
-
-figure.mermaid-empty {
-  /* similar to mermaid-broken but with a neutral "empty diagram" icon/label */
-}
-```
-
----
-
-## Open File Gaps
-
-### What's missing
-
-**Open dialog doesn't start in the current file's directory**
-
-In `app/src/lib.rs`, the native menu handler opens the file dialog with no starting directory. It should start in the directory of the currently open file, or the home directory if no file is open.
-
-The Rust handler has no access to the frontend state. The fix is to expose `open_file_dialog` as a Tauri command that accepts `current_path: Option<String>`, then call it from the frontend where `state.filePath` is available.
-
-**How to implement:**
-
-```rust
-// app/src/commands.rs
-#[tauri::command]
-async fn open_file_dialog(
-    app: AppHandle,
-    current_path: Option<String>,
-) -> Result<Option<String>, String> {
-    let mut builder = app
-        .dialog()
-        .file()
-        .add_filter("Markdown", &["md", "markdown"])
-        .add_filter("All Files", &["*"]);
-
-    if let Some(p) = current_path {
-        if let Some(dir) = Path::new(&p).parent() {
-            builder = builder.set_directory(dir);
-        }
-    }
-
-    Ok(builder
-        .blocking_pick_file()
-        .map(|p| p.to_string_lossy().to_string()))
-}
-```
-
-Register it in `lib.rs` and remove the inline dialog call from the menu handler. Wire up from the frontend:
-
-```typescript
-await listen('menu-open-file', async () => {
-  const path = await invoke<string | null>('open_file_dialog', {
-    currentPath: state.filePath,
-  })
-  if (path) await loadFile(path)
-})
-```
-
----
-
-## App Menubar Structure
-
-### What's implemented
-
-| Menu | macOS | Windows |
-|------|-------|---------|
-| File | Open File, Open Recent, Close File | same |
-| Edit | Undo, Redo, Cut, Copy, Paste, Select All, Find in Document | same |
-| View | Table of Contents, Theme, Enter Full Screen | Table of Contents, Theme |
-| Go | Back, Forward | same |
-| Window | Minimize, Bring All to Front | ❌ missing |
-| Help | ❌ missing | ❌ missing |
-| App (macOS) | About, Services, Hide, Quit | n/a |
-
-### What's missing
-
-**Help menu** — required on all platforms. Minimum content:
-
-```
-Help
-├── MarkdownViewer Help      (opens README or docs URL)
-├── Report an Issue          (opens GitHub issues URL)
-└── About MarkdownViewer     (version dialog)
-```
-
-**Window menu on Windows** — currently macOS-only.
-
-**Disabled states** — no menu item is disabled when no file is open. At minimum, "File → Close File" and "Edit → Find in Document" should be grayed out when no file is open.
-
-### How to implement Help menu
-
-```rust
-// app/src/lib.rs — in the menu builder
-let help_menu = Submenu::with_items(
-    app,
-    "Help",
-    true,
-    &[
-        &MenuItem::with_id(app, "help-docs", "MarkdownViewer Help", true, None::<&str>)?,
-        &PredefinedMenuItem::separator(app)?,
-        &MenuItem::with_id(app, "report-issue", "Report an Issue", true, None::<&str>)?,
-        &PredefinedMenuItem::separator(app)?,
-        &PredefinedMenuItem::about(app, None, None)?,
-    ],
-)?;
-```
-
-Handle the new IDs in `on_menu_event`:
-
-```rust
-"help-docs" => { let _ = open::that_detached("https://github.com/your-org/markview"); }
-"report-issue" => { let _ = open::that_detached("https://github.com/your-org/markview/issues"); }
-```
-
----
-
-## Empty State
-
-### What exists
-
-A minimal welcome screen (`#welcome` in `index.html`) shows:
-
-```
-MarkdownViewer
-Open a file to get started
-Cmd+O to open, or drag and drop a file
-```
-
-### What's undefined
-
-- Which menu items are disabled when no file is open (Find in Document (Find Next/Previous), Close File)
-- First-launch prompt: "Set MarkdownViewer as default .md viewer?" — no decision made
-
-### Recommendation
-
-Disable the following when `state.filePath === null`:
-- Edit → Find in Document
-- File → Close File
-
-Implement by adding a `updateMenuState(hasFile: boolean)` call at the end of `loadFile` and `showWelcome`. Tauri v2 supports `MenuItem.set_enabled(bool)` — store menu item handles in app state.
-
-The first-launch prompt is low priority — skip for v1.
-
----
-
-## App Lifecycle
-
-### What's implemented
-
-- ✅ macOS close-to-hide: `WindowEvent::CloseRequested` → `api.prevent_close()` + `window.hide()` (`app/src/lib.rs`)
-- ✅ Window position/size restored between sessions via `tauri-plugin-window-state`
-
-### What's not applicable yet
-
-**Before-quit pending-write handler** — only needed once task list write-back is implemented. When that lands, add a `RunEvent::ExitRequested` handler to flush pending writes before the process exits.
-
-### What's missing
-
-**Crash recovery** — if the app crashes, the last-open file path is not remembered. The window state plugin restores size/position but not the open file.
-
-**How to implement:**
-
-```typescript
-// In loadFile, after successful render:
-localStorage.setItem('lastFilePath', path)
-
-// In DOMContentLoaded, after event listeners are set up:
-const lastPath = localStorage.getItem('lastFilePath')
-if (lastPath) {
-  await loadFile(lastPath).catch(() => {
-    localStorage.removeItem('lastFilePath')
-  })
-}
-```
-
----
-
-## Callouts
-
-Blockquotes using GitHub's alert syntax render as styled callout boxes rather than plain blockquotes.
-
-**Syntax**
-
-```markdown
-> [!NOTE]
-> This is informational content.
-
-> [!WARNING]
-> This action cannot be undone.
-```
-
-Five types: `NOTE` (blue), `TIP` (green), `IMPORTANT` (purple), `WARNING` (amber), `CAUTION` (red/orange). Each renders with an accent color, inline SVG icon, and bold type label. Type matching is case-insensitive. Unknown `[!TYPE]` values fall back to a plain blockquote. Multi-paragraph content and inline markdown (lists, code, bold, links) inside the callout renders correctly.
-
-**How to implement**
-
-```typescript
-function remarkGithubAlerts() {
-  return (tree) => {
-    visit(tree, 'blockquote', (node) => {
-      const firstParagraph = node.children[0]
-      const match = extractAlertType(firstParagraph) // returns 'NOTE' | 'TIP' | ... | null
-      if (!match) return
-      node.data = { hName: 'div', hProperties: { className: [`alert`, `alert-${match.toLowerCase()}`] } }
-      firstParagraph.children = firstParagraph.children.slice(1)
-    })
-  }
-}
-```
-
-Icons are inline SVGs embedded in CSS `::before` pseudo-elements. Use GitHub's published icon paths for visual consistency. Light and dark variants for all five types via CSS custom properties.
-
-**Open design question:** Does a callout inside another callout render correctly, or fall back to a plain nested blockquote? Recommendation: support nesting — the remark plugin recurses naturally, just define the nested CSS styles.
-
----
-
-## Code Block Copy Button
-
-A copy-to-clipboard button should appear on hover over syntax-highlighted code blocks.
-
-Shiki's output is `<pre class="shiki ..."><code>...</code></pre>`. The copy button can be added as a `::after` pseudo-element on `pre:hover` (CSS-only visibility) with a click handler injected by a post-render DOM pass, similar to how `attachImageHandlers` works in `main.ts`.
-
-**Suggested implementation location:** `ui/renderer/codeBlocks.ts` (new file), called from `loadFile` in `main.ts` after `renderMermaidBlocks`.
-
-`navigator.clipboard.writeText` is available in Tauri v2 WebView — no additional permission needed.
+1. [Debounced Re-render](#debounced-rerender)
+2. [Scroll Position Preservation](#scroll-preservation)
+3. [Image Captions](#image-captions)
+4. [Image Sizing](#image-sizing)
+5. [Status Bar](#status-bar)
+6. [Security Regression Tests](#security-regression-tests)
+7. [Backlog Overview](#backlog-overview)
+8. [Planned Keyboard Shortcuts](#planned-keyboard-shortcuts)
+9. [Open Points](#open-points)
+10. [Deferred Scope](#deferred-scope)
+11. [macOS Proxy Icon](#macos-proxy-icon)
 
 ---
 
@@ -500,6 +187,23 @@ Set a 60-second `setInterval` to refresh the relative timestamp display without 
 
 ---
 
+## Security Regression Tests
+
+The current implementation has the important runtime safeguards in place, but automated coverage should make those invariants harder to regress.
+
+**Acceptance criteria:** tests or harness checks cover the renderer and Rust boundary cases below; failures are visible in CI before release.
+
+| Area | Cases to cover |
+|---|---|
+| Image source policy | Relative images resolve; `../` traversal strips `src`; `http:`, `https:`, `file:`, and author-supplied `markdownviewer:` image URLs are stripped; `data:` and `blob:` remain allowed |
+| CSP | The exact inline theme-bootstrap hash is present; remote image/font origins are absent; `connect-src` remains limited to Tauri IPC endpoints |
+| Custom protocol | Non-image extensions return 403; missing paths return 404; served images include `X-Content-Type-Options: nosniff` and `Cache-Control: no-store` |
+| Outbound URLs | `open_url` rejects control characters, whitespace, non-http schemes, excessive length, and credentialed authorities |
+
+Use lightweight unit tests for pure TypeScript helpers (`resolveWithinBase`) and Rust unit tests for URL/path validators before adding heavier end-to-end coverage.
+
+---
+
 ## Backlog Overview
 
 Features not yet started, ordered by priority.
@@ -538,8 +242,8 @@ Features not yet started, ordered by priority.
 | Feature | Notes |
 |---|---|
 | Command Palette | `Cmd+K`; floating overlay; fuzzy search across Commands, Recent Files, and Headings; arrow keys + Enter; renderer-side implementation |
-| Custom CSS Override | Preferences: path to a `.css` file injected after `github-markdown.css`; scoped to `.markdown-body`; served via `markdownviewer://`; takes effect on next reload |
-| Font Size Controls | `Cmd++`/`Cmd+-`/`Cmd+0` and View menu; 12–24px in 2px steps; default 16px; set on `.markdown-body` root; persisted via `@tauri-apps/plugin-store` |
+| Custom CSS Override | Preferences: path to a `.css` file injected after `github-markdown.css`; scoped to `.markdown-body`; served through a dedicated future resource route rather than author-controlled `markdownviewer://` URLs; takes effect on next reload |
+| Font Size Controls | `Cmd++`/`Cmd+-`/`Cmd+0` and View menu; 12–24px in 2px steps; default 16px; set on `.markdown-body` root; persisted through the same guarded settings layer as other preferences |
 | Math / LaTeX | `$...$` inline and `$$...$$` display; `remark-math` + `rehype-katex`; KaTeX bundled locally; render errors show raw LaTeX in red-bordered span |
 | macOS Quick Look Plugin | macOS-only; Space bar in Finder previews `.md` without opening the app; separate Xcode extension target (`QLPreviewingController`); bundled WKWebView with self-contained HTML renderer |
 | Copy Rendered HTML of Selection | Right-click → "Copy as HTML"; `Selection API` + `ClipboardItem` with both `text/html` and `text/plain`; images omitted or as `data:` URIs; menu item disabled when no selection |
@@ -587,17 +291,12 @@ Cross-cutting design questions that require a decision before the relevant featu
 
 | ID | Question | Before |
 |---|---|---|
-| OP-02 | Empty state / first-run experience — which menu items disable, first-launch prompt? | Release |
-| OP-03 | App menubar — Help menu content, disabled states when no file open | Release |
-| OP-04 | App lifecycle — crash recovery, before-quit handler for write-back | Release |
-| OP-05 | Code block copy button — final approach and CSS pattern | Copy Button |
 | OP-06 | Code block line numbers — in or out of scope? | Release |
 | OP-07 | Wide table scroll behavior — overflow-x or constrained? | Release |
 | OP-08 | Accessibility requirements (VoiceOver, keyboard nav, reduced motion, high contrast) | Release |
 | OP-09 | Link edge cases — mailto:, tel:, broken relative file link behaviour | Release |
 | OP-10 | Code block filename/title annotation — strip or render? | Release |
 | OP-11 | File reload visual indicator — silent, flash, or toast? | Live reload |
-| OP-12 | Callout nesting — full support or fallback to plain blockquote? | Callouts |
 | OP-13 | Settings / Preferences panel UI spec | Any persisted setting |
 | OP-15 | Performance budget — formal targets and automated benchmark setup | Release |
 | OP-16 | Diagram SVG accessibility — role, title, aria attributes | Diagram Zoom |
@@ -628,9 +327,9 @@ Right-clicking the window title bar on macOS shows a breadcrumb path and a "Reve
 #[tauri::command]
 fn set_window_title(window: WebviewWindow, filename: String, full_path: Option<String>) {
     let title = if filename.is_empty() {
-        "MarkdownViewer".to_string()
+        "Markdown Viewer".to_string()
     } else {
-        format!("{} \u{2014} MarkdownViewer", filename)
+        format!("{} \u{2014} Markdown Viewer", filename)
     };
     window.set_title(&title).unwrap();
 

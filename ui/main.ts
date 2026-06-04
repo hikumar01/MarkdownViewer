@@ -1,10 +1,11 @@
-import 'github-markdown-css/github-markdown.css'
+// github-markdown-css's light/dark stylesheets are loaded dynamically by
+// theme.ts via <link> elements that toggle on the active theme.
 import './styles/app.css'
 
 import DOMPurify from 'dompurify'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { message as dialogMessage } from '@tauri-apps/plugin-dialog'
+import { message as dialogMessage, confirm as dialogConfirm } from '@tauri-apps/plugin-dialog'
 import { renderMarkdown } from './renderer/pipeline'
 import { initMermaid, renderMermaidBlocks, rerenderMermaidTheme } from './renderer/mermaid'
 import { detectTheme, applyThemePreference, getThemePreference } from './events/theme'
@@ -13,7 +14,9 @@ import { attachLinkHandlers, setBasePath } from './events/links'
 import { initDragDrop } from './events/drag'
 import { initToc, updateToc, clearToc, toggleToc, isTocVisible } from './events/toc'
 import { initSearch, updateSearchContent, clearSearch, openSearch } from './events/search'
-import { addToRecent, removeFromRecent, clearRecent, syncRecentMenu } from './events/recent'
+import { addToRecent, removeFromRecent, clearRecent, syncRecentMenu, getRecent } from './events/recent'
+import { attachCopyButtons } from './renderer/codeBlocks'
+import { getStorageItem, removeStorageItem, setStorageItem } from './events/storage'
 
 interface AppState {
   filePath: string | null
@@ -89,15 +92,6 @@ function attachImageHandlers(container: HTMLElement): void {
 // --- File loading ---
 
 async function loadFile(path: string): Promise<boolean> {
-  // Push to history unless we're replaying a history entry (back/forward/reload).
-  if (!navigatingHistory) {
-    pushHistory(path)
-    syncNavMenu()
-  }
-
-  state.filePath = path
-  addToRecent(path)
-
   // Normalize to forward-slash separators so lastIndexOf('/') works on Windows
   // where Tauri's canonicalize returns backslash-separated paths.
   const normalPath = path.replace(/\\/g, '/')
@@ -105,17 +99,24 @@ async function loadFile(path: string): Promise<boolean> {
   // basePath is everything up to and including the last '/' so that relative
   // image paths and md links resolve from the file's own directory.
   const basePath = normalPath.substring(0, normalPath.lastIndexOf('/') + 1)
-  setBasePath(basePath)
 
   try {
-    // Run watch and read concurrently — both are independent IPC calls.
-    // watch_file failure is non-fatal: the file renders but won't auto-reload.
-    const [content] = await Promise.all([
-      invoke<string>('read_file', { path }),
-      invoke('watch_file', { path }).catch(() => {}),
-    ])
+    // Read first — anything that fails here means the file is bad and we must
+    // not have touched application state. Watch is best-effort and started
+    // only after read succeeds, so a failed read never leaves a stale watcher.
+    const content = await invoke<string>('read_file', { path })
+    invoke('watch_file', { path }).catch(() => {})
 
     const html = await renderMarkdown(content, basePath)
+
+    // Read succeeded and HTML is ready — commit state.
+    setBasePath(basePath)
+    state.filePath = path
+    addToRecent(path)
+    if (!navigatingHistory) {
+      pushHistory(path)
+      syncNavMenu()
+    }
 
     const contentEl = document.getElementById('content')!
     // Final DOMPurify pass as defense-in-depth: rehypeSanitize already cleaned
@@ -130,17 +131,35 @@ async function loadFile(path: string): Promise<boolean> {
     // Diagrams must be rendered after the HTML is in the DOM so Mermaid can
     // measure containers and produce correctly sized SVGs.
     await renderMermaidBlocks(contentEl)
+    attachCopyButtons(contentEl)
     updateToc(contentEl)
     updateSearchContent(contentEl)
 
     await invoke('set_window_title', { filename: normalPath.split('/').pop()! })
     syncRecentMenu(path)
+    setStorageItem('lastOpenFilePath', path)
+    setStorageItem('lastFilePath', path)
+    invoke('sync_doc_menu', { hasFile: true }).catch(console.error)
     return true
   } catch (err) {
-    await dialogMessage(`Could not open file:\n${path}\n\n${err}`, {
-      title: 'Open Failed',
-      kind: 'error',
-    })
+    const msg = String(err)
+    // canonical_markdown_path returns "File not found" when the path no longer
+    // resolves (deleted/moved/renamed). Offer to prune the recents entry.
+    if (msg.includes('File not found') && getRecent().includes(path)) {
+      const remove = await dialogConfirm(
+        `${path}\n\nThis file no longer exists. Remove it from Recent Files?`,
+        { title: 'File Not Found', kind: 'warning', okLabel: 'Remove', cancelLabel: 'Keep' },
+      )
+      if (remove) {
+        removeFromRecent(path)
+        syncRecentMenu(state.filePath)
+      }
+    } else {
+      await dialogMessage(`Could not open file:\n${path}\n\n${err}`, {
+        title: 'Open Failed',
+        kind: 'error',
+      })
+    }
     return false
   }
 }
@@ -154,7 +173,7 @@ async function reloadCurrentFile(): Promise<void> {
 }
 
 function showWelcome(): void {
-  invoke('unwatch_file')
+  invoke('unwatch_file').catch(console.error)
 
   state.filePath = null
 
@@ -173,6 +192,8 @@ function showWelcome(): void {
   syncRecentMenu(null)
 
   invoke('set_window_title', { filename: '' })
+  invoke('sync_doc_menu', { hasFile: false }).catch(console.error)
+  removeStorageItem('lastFilePath')
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
@@ -239,11 +260,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // Recent Files — open file from native menu, or clear the list.
   await listen<string>('open-recent-file', async ({ payload: path }) => {
-    const ok = await loadFile(path)
-    if (!ok) {
-      removeFromRecent(path)
-      syncRecentMenu(state.filePath)
-    }
+    await loadFile(path)
   })
 
   await listen('clear-recent', () => {
@@ -256,13 +273,26 @@ window.addEventListener('DOMContentLoaded', async () => {
     invoke('sync_toc_menu', { visible: next }).catch(console.error)
   })
 
-  // "open-file" is emitted by the native File menu handler and by OS
-  // file-association / single-instance forwarding (both in lib.rs).
+  // File → Open File… — dialog is opened here so we can pass the current
+  // file's directory (or the last successfully opened directory) as the start.
+  await listen('menu-open-file', async () => {
+    const startDir = state.filePath ?? getStorageItem('lastOpenFilePath') ?? null
+    const picked = await invoke<string | null>('open_file_dialog', { startDir })
+    if (picked) await loadFile(picked)
+  })
+
+  // "open-file" is emitted by OS file-association / single-instance forwarding
+  // (both in lib.rs). The File menu no longer emits this — it emits "menu-open-file".
   await listen<string>('open-file', ({ payload }) => loadFile(payload))
 
   // Recover a file queued during cold launch: RunEvent::Opened fires before the
   // WebView is ready, so the open-file emit above would be dropped. The Rust side
   // stores the path in PendingOpen; we pop it here now that the listener is live.
   const pendingPath = await invoke<string | null>('get_pending_open')
-  if (pendingPath) loadFile(pendingPath).catch(console.error)
+  if (pendingPath) {
+    loadFile(pendingPath).catch(console.error)
+  } else {
+    const lastPath = getStorageItem('lastFilePath')
+    if (lastPath) loadFile(lastPath).catch(() => removeStorageItem('lastFilePath'))
+  }
 })

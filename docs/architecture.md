@@ -1,4 +1,4 @@
-# MarkdownViewer — Technical Architecture
+# Markdown Viewer — Technical Architecture
 
 For mid-level engineers contributing to or evaluating the codebase. Covers the system design, all major technology choices and their rationale, security model, and implementation details.
 
@@ -9,7 +9,7 @@ For mid-level engineers contributing to or evaluating the codebase. Covers the s
 1. [System Overview](#system-overview)
 2. [Source Layout](#source-layout)
 3. [Key Architectural Decisions — Quick Reference](#key-architectural-decisions--quick-reference)
-4. [Tauri v2 Plugin Manifest](#tauri-v2-plugin-manifest)
+4. [Runtime Surface and Capabilities](#runtime-surface-and-capabilities)
 5. [Technology Decisions](#technology-decisions)
    - [Framework: Tauri v2](#framework-tauri-v2)
    - [Markdown Parser: remark/unified](#markdown-parser-remarkunified)
@@ -36,7 +36,7 @@ For mid-level engineers contributing to or evaluating the codebase. Covers the s
 
 ## System Overview
 
-MarkdownViewer is a native desktop app built on Tauri v2: a **Rust backend** that handles all I/O and security, and a **TypeScript/HTML/CSS frontend** running in the OS-native WebView (WKWebView on macOS, WebView2 on Windows). The two halves communicate exclusively via typed Tauri IPC commands — the frontend has no direct filesystem access.
+Markdown Viewer is a native desktop app built on Tauri v2: a **Rust backend** that handles all I/O and security, and a **TypeScript/HTML/CSS frontend** running in the OS-native WebView (WKWebView on macOS, WebView2 on Windows). The two halves communicate exclusively via typed Tauri IPC commands — the frontend has no direct filesystem access.
 
 ```mermaid
 flowchart TB
@@ -51,7 +51,7 @@ flowchart TB
         end
         subgraph BE["Rust Backend · Tauri v2"]
             direction TB
-            lib["lib.rs — app setup · menus · routing"]
+            mainrs["main.rs — app setup · menus · routing"]
             cmds["commands.rs — IPC command handlers"]
             proto["protocol.rs — markdownviewer:// serving"]
         end
@@ -72,7 +72,7 @@ flowchart TB
 
 - The frontend has no direct filesystem access — all reads go through `read_file` / `watch_file` Tauri commands
 - Every path received from the frontend is re-validated in Rust before use (`canonical_markdown_path`)
-- The WebView's CSP prevents arbitrary network requests and script injection
+- The WebView's CSP prevents arbitrary script execution, remote fetches, and image/font beacons
 - The unified processor is frozen at module load — rendering is stateless and safe to call from any event handler
 
 ---
@@ -85,14 +85,16 @@ flowchart TB
 | `ui/renderer/pipeline.ts` | Frozen unified processor, all rehype plugins |
 | `ui/renderer/mermaid.ts` | Mermaid init, render, theme re-render, SVG sanitizer |
 | `ui/renderer/sanitize.ts` | `sanitizeOptions` extending `rehypeSanitize` defaultSchema |
+| `ui/renderer/codeBlocks.ts` | Copy-to-clipboard buttons attached to Shiki code blocks after each render |
 | `ui/events/theme.ts` | Theme detection, preference persistence, OS change listener |
 | `ui/events/links.ts` | Click delegation — anchor scroll, external open, MD navigation |
 | `ui/events/drag.ts` | Native drag-drop overlay and file-open handler |
 | `ui/events/toc.ts` | TOC panel — build from DOM headings, IntersectionObserver scroll-spy, class-based toggle, persistence |
 | `ui/events/search.ts` | In-document search — mark.js integration, match navigation, overlay open/close |
 | `ui/events/recent.ts` | Recent files — localStorage read/write, native submenu sync via `sync_recent_menu` |
+| `ui/events/storage.ts` | Best-effort localStorage wrapper shared by theme, TOC, recents, and restore state |
 | `ui/styles/app.css` | App chrome, image states, Mermaid states, drag overlay, TOC panel, search bar, link tooltip |
-| `app/src/lib.rs` | Tauri app setup, menu construction, event routing |
+| `app/src/main.rs` | Tauri app setup, menu construction, event routing |
 | `app/src/commands.rs` | All `#[tauri::command]` handlers |
 | `app/src/protocol.rs` | `markdownviewer://` URI scheme — secure local file serving |
 | `app/build.rs` | Icon generation from `icons/icon.svg` at build time |
@@ -121,44 +123,56 @@ Full rationale for each decision is in the [Technology Decisions](#technology-de
 
 ---
 
-## Tauri v2 Plugin Manifest
+## Runtime Surface and Capabilities
 
-All Tauri plugins required by the current and planned feature set. Pin to these versions at project init.
+The current app deliberately keeps the frontend permission surface small. File reads, file watching, native file-open dialogs, outbound URL launching, recent-menu rebuilding, and title/menu updates are all exposed as typed Rust commands in `app/src/commands.rs`; the WebView does not receive broad filesystem or shell plugin permissions.
 
-| Plugin | Replaces (if from Electron) | Used by |
+### Current Rust Dependencies and Tauri Plugins
+
+| Dependency | Used by | Notes |
 |---|---|---|
-| `tauri-plugin-dialog` | `dialog.showOpenDialog / showSaveDialog` | P0 Open file, P4 Save diagram, P7 Export |
-| `tauri-plugin-fs` | `fs.readFile / writeFile` | P0 File reading, P5 Task write-back |
-| `tauri-plugin-store` | `electron-store` | P1 Window state, P2 Theme, P3 Recent files, all persisted settings |
-| `tauri-plugin-window-state` | Manual bounds save/restore | P1 Remember window state — automatic |
-| `tauri-plugin-shell` | `shell.openExternal / openPath` | P1 External links, P3 Open in editor |
-| `tauri-plugin-single-instance` | `app.requestSingleInstanceLock()` | P0 Window model |
-| `tauri-plugin-global-shortcut` | `globalShortcut.register()` | P6 Command palette |
-| `tauri-plugin-updater` | Squirrel / electron-updater | P5 Auto-update (OP-20) |
-| `tauri-plugin-deep-link` | `app.on('open-file')` | P1 File type association |
-| `tauri-plugin-notification` | `Notification` | Toast notifications |
+| `tauri` | App shell, WebView, custom commands, menus | Core runtime only; custom protocol enabled by the `custom-protocol` feature |
+| `tauri-plugin-dialog` | Confirm/message dialogs in the frontend; file picker from Rust | The frontend can call confirm/message only; `open_file_dialog` opens the picker from Rust |
+| `tauri-plugin-window-state` | Window bounds persistence | Restores and saves window size/position |
+| `tauri-plugin-single-instance` | Additional CLI opens | Forwards a file path to the running app and focuses the window |
+| `tauri-plugin-deep-link` | `markdownviewer:///path` URLs | Routes incoming URLs through Rust validation before emitting `open-file` |
+| `notify` | Live reload | Uses platform-native file events |
+| `open` | External browser launch | Wrapped by `open_url`, which allows only credential-free `http(s)` URLs |
+| `mime_guess` / `urlencoding` | `markdownviewer://` protocol | Decode local image paths and return MIME types safely |
 
-**Capabilities file** (`app/capabilities/default.json`) — the explicit IPC permission allowlist. The frontend can only invoke commands listed here; any undeclared command call is rejected by the Tauri runtime:
+### Capability File
+
+`app/capabilities/default.json` grants only the plugin APIs the frontend is expected to call directly:
 
 ```json
 {
-  "identifier": "default",
-  "windows": ["main"],
-  "permissions": [
-    "fs:read-files",
-    "fs:write-files",
-    "dialog:open",
-    "dialog:save",
-    "shell:open",
-    "store:allow-get",
-    "store:allow-set",
-    "store:allow-save",
-    "window-state:allow-restore-state",
-    "single-instance:allow-init",
-    "deep-link:allow-get-current"
-  ]
+    "identifier": "default",
+    "windows": ["main"],
+    "permissions": [
+        "core:default",
+        "deep-link:default",
+        "window-state:allow-restore-state",
+        "window-state:allow-save-window-state",
+        "dialog:allow-confirm",
+        "dialog:allow-message"
+    ]
 }
 ```
+
+Notably absent: `fs`, `shell`, `store`, and dialog-open permissions. Persistence currently uses guarded `localStorage`; filesystem access is constrained by Rust commands; external links go through `open_url` rather than the shell plugin.
+
+### Future Plugin Candidates
+
+Future features may justify new permissions, but they should be added at the same time as the feature that needs them:
+
+| Candidate plugin | Feature that would need it | Rule before adding |
+|---|---|---|
+| `tauri-plugin-fs` | Future write-back or export workflows | Prefer typed Rust commands first; grant plugin fs only if a direct frontend API is clearly safer |
+| `tauri-plugin-store` | Preferences panel with structured settings | Current theme/TOC/recent state is simple enough for guarded `localStorage` |
+| `tauri-plugin-shell` | Open-in-editor or reveal-in-file-manager workflows | Keep external browser opening inside `open_url` unless broader shell behavior is required |
+| `tauri-plugin-global-shortcut` | Global command palette shortcut | Current shortcuts are window-scoped menu accelerators |
+| `tauri-plugin-updater` | Auto-update | Requires release signing and update server decisions first |
+| `tauri-plugin-notification` | Toast/notification system | Add only with a documented notification UX |
 
 ---
 
@@ -174,7 +188,7 @@ Each decision below covers the problem context, what was chosen, why it was chos
 
 #### Context
 
-MarkdownViewer is a desktop markdown viewer targeting macOS and Windows. The framework must:
+Markdown Viewer is a desktop markdown viewer targeting macOS and Windows. The framework must:
 
 - Render a rich HTML/CSS/JS UI (markdown, Mermaid diagrams, syntax highlighting)
 - Read and watch files on the local filesystem
@@ -202,7 +216,7 @@ MarkdownViewer is a desktop markdown viewer targeting macOS and Windows. The fra
 | Installer size | 80–120 MB (bundles Chromium) | 3–8 MB (uses OS WebView) |
 | Cold start | ~1.5–3 s | ~0.5–1 s |
 
-MarkdownViewer is a viewer app — it may be open all day alongside an editor. A 3× memory advantage for an idle process is significant.
+Markdown Viewer is a viewer app — it may be open all day alongside an editor. A 3× memory advantage for an idle process is significant.
 
 **Why not native Rust frontend (egui)?**
 
@@ -210,11 +224,11 @@ Mermaid.js v11+ runs as a JavaScript library. It uses Promises, async rendering,
 
 **Why not Wails?**
 
-Wails is architecturally similar (Go backend + WebView frontend) but the plugin ecosystem is far smaller — we need `tauri-plugin-store`, `tauri-plugin-window-state`, `tauri-plugin-deep-link`, and `tauri-plugin-updater`, all of which are first-party Tauri plugins with no Wails equivalents.
+Wails is architecturally similar (Go backend + WebView frontend), but Tauri gives this project first-party window-state, dialog, single-instance, deep-link, bundling, and capability primitives in the same ecosystem as the Rust backend.
 
 **Why Tauri v2 over v1?**
 
-Tauri v2 introduces the **Capabilities security model** — a declarative allowlist of which backend commands the frontend can call. This replaces v1's coarser `allowlist` flags. The frontend cannot call any command not listed in `app/capabilities/default.json`.
+Tauri v2 introduces the **Capabilities security model** — a declarative allowlist for built-in and plugin APIs. Markdown Viewer uses that model to avoid exposing direct `fs` or `shell` APIs to the WebView; file and URL operations stay behind typed Rust commands.
 
 #### Alternatives Rejected
 
@@ -230,7 +244,7 @@ Tauri v2 introduces the **Capabilities security model** — a declarative allowl
 - Rust is the backend language for all file I/O, file watching, and platform integration
 - TypeScript is the frontend language for all rendering and UI logic
 - The Tauri plugin ecosystem handles cross-cutting concerns (storage, window state, deep links, updates)
-- All frontend → backend API access must be declared in `app/capabilities/default.json`
+- Built-in and plugin API access must stay minimal in `app/capabilities/default.json`; application behavior should prefer typed Rust commands for filesystem and OS integration
 - WebView rendering fidelity is tied to OS WebView versions (Safari on macOS, WebView2 on Windows) — test on both
 - Node.js modules that require a Node runtime cannot be used in the backend
 - Direct filesystem access from the frontend is not permitted
@@ -246,9 +260,9 @@ Tauri v2 introduces the **Capabilities security model** — a declarative allowl
 The core feature is rendering markdown to HTML. The parser must:
 
 - Support CommonMark and GitHub Flavored Markdown (GFM) accurately
-- Be extensible — footnotes, definition lists, abbreviations, superscript, subscript, highlights, math, callouts, and more are planned across P3–P6
+- Be extensible — definition lists, abbreviations, superscript, subscript, highlights, math, callouts, and more are tracked in the future backlog
 - Resolve the `~`/`~~` conflict (subscript vs. GFM strikethrough) correctly regardless of plugin registration order
-- Annotate AST nodes with source positions (required for task write-back in P5)
+- Annotate AST nodes with source positions (needed for planned task write-back)
 - Run in a browser WebView — no Node.js at runtime
 
 #### Decision
@@ -275,7 +289,7 @@ markdown-it resolves this at **plugin registration order** — strikethrough mus
 
 **Source positions:**
 
-micromark attaches `position.start.line` / `position.end.line` to every AST node. Task write-back (P5 Feature 7) annotates `<input type="checkbox">` elements with `data-line` attributes for precise single-line file writes. markdown-it's token stream does not carry source positions equivalently.
+micromark attaches `position.start.line` / `position.end.line` to every AST node. Planned task write-back can annotate `<input type="checkbox">` elements with `data-line` attributes for precise single-line file writes. markdown-it's token stream does not carry source positions equivalently.
 
 **Plugin completeness:**
 
@@ -413,7 +427,7 @@ Mermaid.js is a pure TypeScript/JavaScript library with no native code dependenc
 
 **Widest format coverage:**
 
-Mermaid covers all required diagram types with a single library and is the de-facto standard for diagrams in markdown — GitHub, GitLab, Notion, Obsidian, and VS Code all use it. Users authoring ` ```mermaid ` blocks expect MarkdownViewer to render them exactly as those platforms do.
+Mermaid covers all required diagram types with a single library and is the de-facto standard for diagrams in markdown — GitHub, GitLab, Notion, Obsidian, and VS Code all use it. Users authoring ` ```mermaid ` blocks expect Markdown Viewer to render them exactly as those platforms do.
 
 **Async API (v10+):**
 
@@ -427,7 +441,7 @@ This integrates cleanly with the async rendering pipeline and avoids layout jank
 
 **SVG output:**
 
-SVG is vector (scalable without quality loss), copyable/exportable, inspectable by screen readers with `role="img"`, and can be targeted by the future Diagram Inspector (P7). Raster canvas output loses all of these properties.
+SVG is vector (scalable without quality loss), copyable/exportable, inspectable by screen readers with `role="img"`, and can be targeted by a future Diagram Inspector. Raster canvas output loses all of these properties.
 
 **Why DOMPurify cannot be used for SVG sanitization:**
 
@@ -458,7 +472,7 @@ Mermaid v11 renders node labels as `<foreignObject><div><span>` inside SVG. DOMP
 
 #### Context
 
-MarkdownViewer will support many markdown extensions beyond CommonMark and GFM: superscript, subscript, highlight, footnotes, definition lists, abbreviations, callouts, image captions, math, and more. Each is a remark or rehype plugin. The question is how to organize, toggle, and test them.
+Markdown Viewer will support many markdown extensions beyond CommonMark and GFM: superscript, subscript, highlight, footnotes, definition lists, abbreviations, callouts, image captions, math, and more. Each is a remark or rehype plugin. The question is how to organize, toggle, and test them.
 
 **Options considered:**
 
@@ -481,9 +495,9 @@ MarkdownViewer will support many markdown extensions beyond CommonMark and GFM: 
 
 | Feature | Why standalone |
 |---|---|
-| Task List Write-back (P5 Feature 7) | Has a separate enable/disable because it writes to disk |
-| Frontmatter Display (P5 Feature 8) | Has its own collapsible panel UI |
-| Mermaid Theme (P5 Feature 9) | Has its own submenu with multiple choices |
+| Task List Write-back | Has a separate enable/disable because it writes to disk |
+| Frontmatter Display | Has its own collapsible panel UI |
+| Mermaid Theme | Has its own submenu with multiple choices |
 
 #### Rationale
 
@@ -526,18 +540,18 @@ Multiple editor- and server-adjacent features were raised during planning: a spl
 | Viewer-only | No editor pane or split view | Adds CodeMirror, scroll sync, debounced save, undo — doubles the UI surface area. The core value does not require editing. |
 | Single file | No folder sidebar or file browser | Folder watch, tree UI, file sorting are a separate product concern. Single-file works for the primary use case. |
 | Offline-first | No remote URL preview | Remote fetching requires network permissions, CORS handling, auth, and an error model for flaky connections. |
-| Export last | Export to PDF/HTML is P7 | Export quality requires polishing print styles and testing across document types. Must not block core viewer features. |
+| Export last | Export to PDF/HTML is future scope | Export quality requires polishing print styles and testing across document types. Must not block core viewer features. |
 | Mermaid only | PlantUML, Graphviz, D2 removed | Each requires a separate runtime, build pipeline, and maintenance. Mermaid covers the overwhelming majority of diagrams users actually write. |
 
 #### Rationale
 
 **Viewer-first is a coherent product position:**
 
-VS Code's markdown preview is embedded in an editor. GitHub renders markdown read-only. MarkdownViewer's value is being the best standalone read-only renderer — fast, lightweight, always open. Adding an editor pulls it toward competing with VS Code, which already wins that comparison.
+VS Code's markdown preview is embedded in an editor. GitHub renders markdown read-only. Markdown Viewer's value is being the best standalone read-only renderer — fast, lightweight, always open. Adding an editor pulls it toward competing with VS Code, which already wins that comparison.
 
 **Single-file keeps the security model simple:**
 
-Expanding to folder access requires broader `fs` permissions and a more complex capability scope. v1 keeps the permission surface minimal — the Tauri capability file grants only what is needed to open, read, and watch one file at a time.
+Expanding to folder access requires recursive enumeration, more complex watcher state, and a broader trust model. v1 keeps the permission surface minimal — the frontend receives no direct `fs` permission, and Rust validates one file path at a time.
 
 **Offline-first respects the app's passive nature:**
 
@@ -548,7 +562,7 @@ The app is typically opened alongside an editor. It should never show a spinner 
 - The Tauri IPC surface in v1 does not need folder enumeration or network fetch commands
 - The single-tab window model is correct for v1 — one file, one window
 - Architecture decisions must not *prevent* editor/folder/remote features from being added in v2, but v1 does not implement them
-- Export (P7) items are documented as future scope — keep the renderer HTML clean for export; keep `@media print` styles in mind
+- Export items are documented as future scope — keep the renderer HTML clean for export; keep `@media print` styles in mind
 
 **Ruled out for v1:** editor pane / split view, folder sidebar, remote URL preview, PlantUML / Graphviz / D2 rendering
 
@@ -560,7 +574,7 @@ The app is typically opened alongside an editor. It should never show a spinner 
 
 #### Context
 
-MarkdownViewer targets macOS and Windows. Some OS features have direct equivalents on both platforms; others exist only on one:
+Markdown Viewer targets macOS and Windows. Some OS features have direct equivalents on both platforms; others exist only on one:
 
 | Feature | macOS | Windows |
 |---|---|---|
@@ -587,11 +601,11 @@ A policy is needed so developers know what to implement, what to skip, and how t
 
 | Feature | Cross-platform baseline | Platform enhancement |
 |---|---|---|
-| Window title | `window.set_title("filename — MarkdownViewer")` | macOS: `set_represented_filename` for proxy icon (unimplemented.md) |
-| Recent files | In-app submenu from `tauri-plugin-store` | macOS: `NSDocumentController.noteNewRecentDocumentURL` (Dock integration) — post-v1 |
+| Window title | `window.set_title("filename — Markdown Viewer")` | macOS: `set_represented_filename` for proxy icon (unimplemented.md) |
+| Recent files | Guarded `localStorage` plus Rust menu rebuild via `sync_recent_menu` | macOS: `NSDocumentController.noteNewRecentDocumentURL` (Dock integration) — post-v1 |
 | File association | `tauri.conf.json` `fileAssociations` → Tauri generates `Info.plist` + registry | None needed — Tauri handles both |
 | File watching | `notify` crate — FSEvents (macOS) + ReadDirectoryChangesW (Windows) | None — `notify` abstracts both |
-| Quick Look preview | Not applicable — macOS-exclusive | macOS only: `QLPreviewingController` extension (P6 Feature 5) |
+| Quick Look preview | Not applicable — macOS-exclusive | macOS only: `QLPreviewingController` extension |
 | Accessibility | Semantic HTML + ARIA (WebView, cross-platform) | macOS: VoiceOver; Windows: NVDA — same HTML works on both |
 
 **Out of scope for v1:** Windows Jump Lists, Windows Preview Pane handler, macOS `NSDocumentController` recent items integration
@@ -604,10 +618,10 @@ Quick Look does not violate this rule because it is explicitly macOS-exclusive w
 
 #### Consequences
 
-- All features in P0–P5 have cross-platform implementations
+- Shipped user-visible features have cross-platform implementations unless explicitly documented as platform-specific enhancements
 - Platform enhancement code in the Rust backend is always in `#[cfg]` blocks that compile to no-ops on other platforms
-- CI must include Windows runners before any P0 feature is merged
-- macOS-only implementations of features that appear in P0–P5 without a Windows equivalent are ruled out
+- CI must include Windows runners before broadening baseline platform behavior
+- macOS-only implementations of baseline viewer features without a Windows equivalent are ruled out
 
 ---
 
@@ -617,17 +631,17 @@ Quick Look does not violate this rule because it is explicitly macOS-exclusive w
 
 #### Context
 
-P5 Feature 7 (Task List Write-back) requires writing a single modified line back to the source `.md` file when the user clicks a task checkbox. Future write operations include:
+Markdown Viewer is currently read-only. The first planned write feature is task-list write-back: writing a single modified line back to the source `.md` file when the user clicks a task checkbox. Later write operations may include:
 
-- P7 Feature 10 (Mermaid Live-edit): replace a multi-line ` ```mermaid ` block
-- P7 Feature 7 (Editor pane): save the full file on `Cmd+S`
-- P7 Feature 8 (Paste image): write an image file to disk
+- Mermaid Live-edit: replace a multi-line ` ```mermaid ` block
+- Editor pane: save the full file on `Cmd+S`
+- Paste image: write an image file to disk
 
 A design is needed that handles the task write-back case cleanly and can be extended without redesign.
 
 #### Decision
 
-**Implement typed Rust backend commands for each write operation.** Start with `toggle_task` for P5 Feature 7. Future write operations get their own commands.
+**Implement typed Rust backend commands for each write operation.** Start with `toggle_task` when task write-back is implemented. Future write operations get their own commands.
 
 **Design principles:**
 
@@ -637,7 +651,7 @@ A design is needed that handles the task write-back case cleanly and can be exte
 4. Error responses are explicit — commands return `Result<(), String>`; the frontend handles `Ok` and `Err` separately
 5. File watcher suppression is the frontend's responsibility — the frontend sets a `suppressNextReload` flag before calling a write command, so the resulting `file-changed` event does not trigger a visible re-render loop
 
-**Current command (P5 Feature 7):**
+**Planned first command:**
 
 ```rust
 #[tauri::command]
@@ -646,7 +660,8 @@ async fn toggle_task(
     line_number: usize,  // 1-indexed, matching remark AST position.start.line
     checked: bool,
 ) -> Result<(), String> {
-    let content = fs::read_to_string(&file_path).map_err(|e| e.to_string())?;
+    let canonical = canonical_markdown_path(&file_path)?;
+    let content = fs::read_to_string(&canonical).map_err(|_| "Failed to read file".to_string())?;
     let mut lines: Vec<String> = content.lines().map(String::from).collect();
     if let Some(line) = lines.get_mut(line_number - 1) {
         if checked {
@@ -655,7 +670,7 @@ async fn toggle_task(
             *line = line.replacen("- [x]", "- [ ]", 1).replacen("* [x]", "* [ ]", 1);
         }
     }
-    fs::write(&file_path, lines.join("\n")).map_err(|e| e.to_string())
+    fs::write(&canonical, lines.join("\n")).map_err(|_| "Failed to write file".to_string())
 }
 ```
 
@@ -663,10 +678,10 @@ async fn toggle_task(
 
 | Command | Scope | Use case |
 |---|---|---|
-| `toggle_task` | Single line replace | Task list write-back (P5 Feature 7) |
-| `write_range` | Line range replace | Mermaid block update (P7 Feature 10) |
-| `write_file` | Full file replace | Editor save (P7 Feature 7) |
-| `write_binary` | Write bytes to new path | Paste image (P7 Feature 8) |
+| `toggle_task` | Single line replace | Task list write-back |
+| `write_range` | Line range replace | Mermaid block update |
+| `write_file` | Full file replace | Editor save |
+| `write_binary` | Write bytes to new path | Paste image |
 
 #### Rationale
 
@@ -685,7 +700,7 @@ Markdown files are small (typically < 1 MB). Reading the full file, modifying on
 #### Consequences
 
 - One Rust function per write operation type — no generic message dispatch
-- All write commands are registered in `app/capabilities/default.json` with `fs:write-files`
+- Write commands are exposed as typed Rust application commands; do not grant broad frontend `fs:write-files` unless a future design explicitly requires it
 - The frontend always sets `suppressNextReload` before any write command
 - Line numbers from the frontend are 1-indexed, matching remark's `position.start.line`
 - Future write operations extend this pattern — they do not replace it
@@ -716,7 +731,7 @@ flowchart LR
 **Why this order matters:**
 
 - `rehypeExtractMermaid` runs before `rehypeShiki` — Shiki skips `pre.mermaid-source` by design; the class is the signal
-- `rehypeResolveImages` rewrites relative `src` values to `markdownviewer://` before `rehypeSanitize`, which must allowlist that scheme in `protocols.src`
+- `rehypeResolveImages` rewrites renderer-approved relative `src` values to `markdownviewer://` before `rehypeSanitize`, which must allowlist that scheme in `protocols.src`
 - `rehypeSlug` runs before `rehypeSanitize` so generated `id` attributes survive — they're allow-listed on `h1`–`h6` only
 - `rehypeSanitize` runs before `rehypeShiki` — Shiki's `style=` output on `<span>/<pre>` is intentionally in the schema; it is not stripped post-hoc
 - The processor is built once and `processor.freeze()`'d at module load — repeated renders are allocation-free in the plugin chain; per-render state (`basePath`) is threaded through `VFile.data`
@@ -725,7 +740,7 @@ flowchart LR
 
 `rehypeExtractMermaid` is a HAST-level plugin (not a remark plugin) because the mdast-util-to-hast `applyData` path wraps rather than replaces the default code handler's `<pre>`, producing `<pre><pre><code>` double-nesting. Working at the HAST level after `remarkRehype` avoids this entirely.
 
-`rehypeResolveImages` resolves relative paths with a `startsWith(basePath)` traversal guard — images outside the open file's directory tree are rejected before the `markdownviewer://` request reaches Rust. Both `decodeURIComponent` and OS-level `canonicalize` run on every path to defeat double-encoded traversal attempts (`%252E%252E`).
+`rehypeResolveImages` resolves relative paths with a `startsWith(basePath)` traversal guard — images outside the open file's directory tree are stripped before the `markdownviewer://` request reaches Rust. Author-supplied URI schemes (`http:`, `https:`, `file:`, literal `markdownviewer:`, and similar) are rejected by the shared resolver. Both `decodeURIComponent` and OS-level `canonicalize` run on every local path to defeat double-encoded traversal attempts (`%252E%252E`).
 
 ---
 
@@ -762,7 +777,7 @@ The custom sanitizer in `mermaid.ts`:
 
 ### Path validation
 
-Every file path from untrusted sources (argv, deep links, drag-drop, frontend IPC) passes through `safe_markdown_path` (Rust, `lib.rs`) or `canonical_markdown_path` (Rust, `commands.rs`) before any filesystem operation:
+Every file path from untrusted sources (argv, deep links, drag-drop, frontend IPC) passes through `safe_markdown_path` (Rust, `main.rs`) or `canonical_markdown_path` (Rust, `commands.rs`) before any filesystem operation:
 
 1. `fs::canonicalize` — resolves symlinks and all `..` components at OS level; rejects non-existent paths
 2. `is_file()` check — rejects directories
@@ -772,18 +787,18 @@ This ordering means a double-encoded traversal (`%252E%252E`) is still caught �
 
 ### Local image serving (`markdownviewer://`)
 
-`file://` is never used for local images — it would allow untrusted markdown content to reference any local file. Instead, images are served through the `markdownviewer://` custom URI scheme handler (`protocol.rs`), which:
+`file://` is never used for local images — it would allow untrusted markdown content to reference arbitrary local files. Instead, relative image paths are resolved by the renderer and then served through the `markdownviewer://` custom URI scheme handler (`protocol.rs`), which:
 
 - Calls `canonicalize` on every request path
 - Enforces an image-only extension allowlist (png, jpg, jpeg, gif, webp, svg, avif, bmp, tiff, ico)
 - Sets `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`
-- Returns 403 for path traversal attempts — not 404 — to avoid filesystem information leakage
+- Returns 404 for missing or non-canonicalizable paths and 403 for non-files or disallowed file types
 
-Relative image `src` values in markdown are rewritten to `markdownviewer://{resolved-path}` by `rehypeResolveImages`. The rewrite includes a `startsWith(basePath)` traversal guard — images outside the open file's directory tree are rejected before the request even reaches Rust.
+Relative image `src` values in markdown are rewritten to `markdownviewer://{resolved-path}` by `rehypeResolveImages`. The rewrite includes a `startsWith(basePath)` traversal guard, rejects absolute paths and URI schemes, and deletes unresolved `src` values. Raw markdown cannot opt into the custom protocol by writing `markdownviewer://...`; only renderer-created custom-protocol URLs are expected to load.
 
 ### Deep link validation
 
-Deep links arrive as `markdownviewer:///path/to/file.md` (3 slashes = empty authority). The `path_from_deep_link` function in `lib.rs` rejects any URL where the path after `markdownviewer://` does not begin with `/`, preventing hostname injection (`markdownviewer://hostname/path`).
+Deep links arrive as `markdownviewer:///path/to/file.md` (3 slashes = empty authority). The `path_from_deep_link` function in `main.rs` rejects any URL where the path after `markdownviewer://` does not begin with `/`, preventing hostname injection (`markdownviewer://hostname/path`).
 
 ### MD link navigation
 
@@ -799,17 +814,28 @@ Relative `.md` link clicks resolve through `resolveMdPath` in `links.ts`, which 
 ### CSP and capabilities
 
 The WebView's Content Security Policy (set in `tauri.conf.json`) prevents:
-- `eval` and inline scripts (except the FOUC-prevention theme script)
-- Connections to external origins
+- `eval` and arbitrary inline scripts; the FOUC-prevention theme script is allowed by an exact SHA-256 hash
+- External XHR/fetch/WebSocket connections from rendered markdown
+- Remote image/font beacons (`img-src` is limited to `self`, `markdownviewer:`, `data:`, and `blob:`; `font-src` is limited to `self` and `data:`)
 - `object` and `embed` elements
 
-The Tauri capability file (`app/capabilities/default.json`) explicitly grants only the minimum IPC surface: `core:default`, `deep-link:default`, `dialog:allow-confirm`, `dialog:allow-message`, and the two window-state permissions. No `fs` or `shell` permissions are granted to the frontend — all file I/O goes through the typed Rust commands.
+The Tauri capability file (`app/capabilities/default.json`) explicitly grants only the minimum plugin surface: `core:default`, `deep-link:default`, `dialog:allow-confirm`, `dialog:allow-message`, and the two window-state permissions. No `fs`, `shell`, `store`, or dialog-open permissions are granted to the frontend — all file I/O and URL launching goes through typed Rust commands.
+
+### Hardening invariants for IPC commands
+
+The following invariants are enforced at every Rust boundary command and apply to any new command added to `commands.rs`:
+
+- **Generic error messages** — never propagate raw `io::Error` strings (or any error containing absolute paths or OS-specific text) back to the frontend. The frontend gets a stable, user-safe message; debug detail stays in `eprintln!`/logs only.
+- **Outbound URL strings are filtered before reaching the OS launcher.** `open_url` rejects URLs longer than 2048 chars, any URL containing ASCII control characters or whitespace, any scheme other than `http(s)`, and credentialed authorities such as `https://user@example.com`. This blocks CRLF / argument-injection vectors and deceptive credential-injection URLs before they reach legacy registered URL handlers.
+- **Path resolution always rejects the `basePath`-empty case** in both `resolveLocalPath` (image src) and `resolveMdPath` (link target). With no anchor directory, traversal would otherwise resolve at filesystem root.
+- **Embedded NUL is rejected** in any frontend-supplied path before the OS sees it (decoded path containing `\0` short-circuits to a rejection). Some platforms otherwise truncate paths at the first NUL, defeating extension checks.
+- **State commits only after successful read.** `loadFile` no longer mutates `state.filePath`, navigation history, or Recent Files until `read_file` has returned content. A failed open cannot leave the app pointing at a non-existent file or push a phantom entry into history.
 
 ---
 
 ## IPC Command Reference
 
-All commands are defined in `app/src/commands.rs` and registered in `lib.rs`.
+All commands are defined in `app/src/commands.rs` and registered in `main.rs`.
 
 **Frontend → Rust (invoke):**
 
@@ -818,13 +844,15 @@ All commands are defined in `app/src/commands.rs` and registered in `lib.rs`.
 | `read_file` | `path: String` | Read markdown file; validates path, returns content |
 | `watch_file` | `path: String` | Start FSEvents/ReadDirChanges watcher; emits `file-changed` or `file-deleted` |
 | `unwatch_file` | — | Stop the current watcher |
-| `set_window_title` | `filename: String` | Update title bar (`filename — MarkdownViewer`, or just `MarkdownViewer` if empty) |
+| `set_window_title` | `filename: String` | Update title bar (`filename — Markdown Viewer`, or just `Markdown Viewer` if empty) |
 | `sync_nav_menu` | `canBack: bool, canForward: bool` | Enable/disable Back/Forward menu items |
+| `sync_doc_menu` | `hasFile: bool` | Enable/disable document-dependent menu items such as Close and Find |
 | `sync_theme_menu` | `preference: String` | Sync View → Theme checkmarks on startup |
 | `sync_toc_menu` | `visible: bool` | Sync View → Table of Contents checkmark on startup and after each toggle |
 | `sync_recent_menu` | `paths: Vec<String>, current: Option<String>` | Rebuild Open Recent submenu; **must be async** — see [Async Menu Commands](#async-menu-commands) |
+| `open_file_dialog` | `start_dir: Option<String>` | Open native file picker from Rust, filtered to Markdown files, returning a canonical path on selection |
 | `get_pending_open` | — | Pop the file path queued during cold launch (before WebView ready); returns `Option<String>` |
-| `open_url` | `url: String` | Open an `http(s)://` URL in the system browser; rejects non-http |
+| `open_url` | `url: String` | Open a credential-free `http(s)://` URL in the system browser; rejects other schemes and unsafe characters |
 
 **Rust → Frontend (emit):**
 
@@ -832,7 +860,8 @@ All commands are defined in `app/src/commands.rs` and registered in `lib.rs`.
 |---|---|---|
 | `file-changed` | `path: string` | Watched file was modified (or atomically replaced) |
 | `file-deleted` | `path: string` | Watched file was deleted or moved away |
-| `open-file` | `path: string` | Open a specific file (from menu, argv, deep link, Finder) |
+| `open-file` | `path: string` | Open a specific file from argv, deep link, Finder, or recent-file selection |
+| `menu-open-file` | — | File → Open File selected; frontend calls `open_file_dialog` with the current/last directory |
 | `close-file` | — | Close the current file |
 | `theme-set` | `'light' \| 'dark' \| 'system'` | Theme menu selection |
 | `nav-back` / `nav-forward` | — | Go menu Back/Forward |
@@ -867,7 +896,7 @@ Only one watcher is kept alive at a time in a `Mutex<Option<RecommendedWatcher>>
 
 ```mermaid
 flowchart LR
-    A["localStorage\nmarkview-theme"] -->|"system / light / dark"| B["Inline sync script\nin <head>"]
+    A["localStorage\ntheme"] -->|"system / light / dark"| B["Inline sync script\nin <head>"]
     B -->|"adds html.dark if needed"| C["CSS renders\nno FOUC"]
     D["OS appearance change"] --> E{"preference == 'system'?"}
     E -->|"yes"| F["matchMedia listener\n→ update html.dark"]
@@ -883,9 +912,9 @@ flowchart LR
 
 **Mermaid diagrams:** SVGs must be fully re-rendered (not just re-styled) on theme change because SVG colors are baked in at render time. `figure.dataset.mermaidSrc` stores the original source for in-place re-render without re-reading the file.
 
-**FOUC prevention:** A synchronous inline `<script>` in `<head>` reads `localStorage['markview-theme']` and adds `html.dark` before any CSS loads — eliminating flash of unstyled content on startup.
+**FOUC prevention:** A synchronous inline `<script>` in `<head>` reads `localStorage['theme']` inside a `try` block and adds `html.dark` before any CSS loads — eliminating flash of unstyled content on startup. The CSP permits this script by exact SHA-256 hash rather than enabling arbitrary inline scripts.
 
-**Manual override:** Stored as `'light'` | `'dark'` | `'system'` in `localStorage['markview-theme']`. OS preference changes fire `window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', ...)` only when the preference is `'system'`; manual overrides suppress OS events entirely.
+**Manual override:** Stored as `'light'` | `'dark'` | `'system'` in `localStorage['theme']` through the best-effort storage helper. OS preference changes fire `window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', ...)` only when the preference is `'system'`; manual overrides suppress OS events entirely.
 
 **Menu sync:** `sync_theme_menu` is called once on startup with the current localStorage value so native checkmarks reflect the persisted preference rather than always defaulting to "System".
 
@@ -903,13 +932,13 @@ Relative MD links are resolved using `resolveMdPath` in `ui/events/links.ts`. Th
 
 ## Table of Contents System
 
-The TOC panel (`#toc` in `index.html`) is built and managed entirely in the frontend — `ui/events/toc.ts`. No Rust backend involvement at render time.
+The TOC panel (`#toc`) is created lazily and managed entirely in the frontend by `ui/events/toc.ts`. No Rust backend involvement is needed at render time, aside from syncing the native menu checkmark.
 
 **Build:** after every `loadFile`, `updateToc(contentEl)` queries the rendered DOM for all `h1`–`h6` elements inside `.markdown-body` and builds a list of `<a>` entries. Each entry is indented by `(level - 1) * 1rem`. Entries with empty text are skipped. If no headings are found, a "No headings found" placeholder is shown.
 
 **Scroll-spy:** `IntersectionObserver` watches each heading element with `rootMargin: '-10% 0px -85% 0px'`. This creates a narrow horizontal band near the top of the viewport. When a heading enters this zone, it is marked as the active TOC entry (only one active at a time). The observer is torn down and rebuilt on each `updateToc` call.
 
-**Toggle:** `toggleToc()` flips a `visible` boolean stored in `localStorage['markview-toc-visible']`. Visibility is applied via `#toc.toc-visible { display: block }` — not the HTML `hidden` attribute. WKWebView's author stylesheet overrides the UA `[hidden] { display: none }` rule, making attribute-based hiding unreliable. The `#app.toc-open` class adds a `padding-right` margin to the document so text does not slide under the floating panel.
+**Toggle:** `toggleToc()` flips between `open` and `closed` in `localStorage['toc']` through the best-effort storage helper. Visibility is applied via `#toc.toc-visible { display: block }` — not the HTML `hidden` attribute. WKWebView's author stylesheet overrides the UA `[hidden] { display: none }` rule, making attribute-based hiding unreliable. The `#app.toc-open` class lets CSS adjust the document area so text does not sit under the floating panel.
 
 **Menu sync:** `sync_toc_menu` is a sync Tauri command (safe because it calls `set_checked` on a single `CheckMenuItem` — a fast main-thread operation that does not require rebuilding the submenu tree).
 
@@ -931,9 +960,9 @@ The search bar (`#search-bar`) is a floating overlay managed by `ui/events/searc
 
 ## Recent Files
 
-Recent files are stored in `localStorage['markview-recent']` as a JSON array of absolute file paths (max 10, MRU first). `ui/events/recent.ts` is the single owner of this data.
+Recent files are stored in `localStorage['recent']` as a JSON array of absolute file paths (max 10, MRU first). `ui/events/recent.ts` is the single owner of this data and reads/writes through the best-effort storage helper.
 
-**Write path:** `addToRecent(path)` — prepend path, filter duplicates, trim to 10, save. Called unconditionally at the start of every `loadFile`, before the `try` block, so the entry is recorded even if rendering later fails.
+**Write path:** `addToRecent(path)` prepends the path, filters duplicates, trims to 10, and saves. It runs only after `read_file` succeeds and markdown has rendered, so failed opens do not pollute the list.
 
 **Submenu rebuild:** `syncRecentMenu(currentPath)` calls the async `sync_recent_menu` Tauri command, passing the full list and the currently open path. The command:
 
@@ -941,10 +970,10 @@ Recent files are stored in `localStorage['markview-recent']` as a JSON array of 
 2. Increments a generation counter in `RecentPaths` state (generation is embedded in all IDs)
 3. Locates the "Open Recent" `Submenu` node via a two-level manual tree walk — `menu.get()` reliably finds `CheckMenuItem` nodes but not `Submenu` nodes in all Tauri v2 builds
 4. Removes existing items with a bounded loop (`for _ in 0..item_count { remove_at(0) }`) — an unbounded `while is_ok()` loop risks infinite execution if `remove_at` misbehaves on an empty menu
-5. Appends new items: existing files get `rf-{gen}-{idx}` IDs; missing files get `rfe-{gen}-{idx}` IDs (disabled, cannot be clicked); the Clear button gets `rfc-{gen}`
+5. Appends new items: recent entries get `rf-{gen}-{idx}` IDs and remain clickable; if there are no entries, a disabled `rfe-{gen}` placeholder is shown; the Clear button gets `rfc-{gen}`
 6. Stores the ordered path list in `RecentPaths` state for click-event dispatch
 
-**Click dispatch:** the `on_menu_event` handler matches `rf-{gen}-{idx}` patterns (not `rfe-` disabled items), looks up `guard.0[idx]` in `RecentPaths`, and emits `open-recent-file` with the path. The frontend's listener calls `loadFile`; on failure it calls `removeFromRecent` + `syncRecentMenu` to prune the stale entry.
+**Click dispatch:** the `on_menu_event` handler matches `rf-{gen}-{idx}` patterns (not the `rfe-` placeholder), looks up `guard.0[idx]` in `RecentPaths`, and emits `open-recent-file` with the path. The frontend's listener calls `loadFile`; stale-path pruning stays inside `loadFile` so the user's Remove/Keep choice is honored consistently.
 
 ---
 

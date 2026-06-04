@@ -5,10 +5,43 @@ use tauri::menu::{MenuItem, MenuItemKind, PredefinedMenuItem};
 
 use crate::WatcherState;
 
+/// Recursively searches the menu tree for a `CheckMenuItem` with the given id.
+/// `menu.get()` only inspects the root menu's direct children, so any item that
+/// lives inside a submenu (View → Theme, View → toc-toggle, etc.) is invisible
+/// to it. We walk submenus to two levels which covers the entire menu shape.
+pub(crate) fn find_check_item<R: tauri::Runtime>(
+    menu: &tauri::menu::Menu<R>,
+    id: &str,
+) -> Option<tauri::menu::CheckMenuItem<R>> {
+    let top_items = menu.items().ok()?;
+    for top in top_items {
+        let MenuItemKind::Submenu(sub) = top else { continue };
+        let Ok(children) = sub.items() else { continue };
+        for child in children {
+            match child {
+                MenuItemKind::Check(c) if c.id().as_ref() == id => return Some(c),
+                MenuItemKind::Submenu(inner) => {
+                    let Ok(inner_children) = inner.items() else { continue };
+                    for ic in inner_children {
+                        if let MenuItemKind::Check(c) = ic {
+                            if c.id().as_ref() == id { return Some(c); }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
 /// Canonicalizes `path` and verifies it is a regular markdown file.
 /// Rejects path traversal, symlink escapes, directories, and non-markdown extensions.
 /// Error messages are intentionally generic to avoid leaking filesystem information.
-fn canonical_markdown_path(path: &str) -> Result<std::path::PathBuf, String> {
+///
+/// This is the single path-validation entry point; `lib.rs::safe_markdown_path`
+/// is a thin Option-returning wrapper for callers that silently drop on failure.
+pub(crate) fn canonical_markdown_path(path: &str) -> Result<std::path::PathBuf, String> {
     let canonical = std::fs::canonicalize(path)
         .map_err(|_| "File not found".to_string())?;
     if !canonical.is_file() {
@@ -28,7 +61,12 @@ fn canonical_markdown_path(path: &str) -> Result<std::path::PathBuf, String> {
 #[tauri::command]
 pub fn read_file(path: String) -> Result<String, String> {
     let canonical = canonical_markdown_path(&path)?;
-    std::fs::read_to_string(&canonical).map_err(|e| e.to_string())
+    // Generic error: the underlying io::Error message can include the absolute
+    // canonical path and OS-specific text (permission denied, fs corruption,
+    // etc.). The frontend only needs to know the read failed; leaking the
+    // canonical path back to renderable markdown content would defeat the
+    // canonicalization barrier.
+    std::fs::read_to_string(&canonical).map_err(|_| "Failed to read file".to_string())
 }
 
 #[tauri::command]
@@ -128,8 +166,26 @@ pub fn sync_nav_menu(app: tauri::AppHandle, can_back: bool, can_forward: bool) -
 
 #[tauri::command]
 pub fn open_url(url: String) -> Result<(), String> {
+    // Defense in depth before handing the string to the OS URL launcher:
+    //   - cap length so a pathological URL can't trigger an OS-level overflow
+    //     in legacy registered handlers
+    //   - reject any ASCII control character or whitespace; an embedded CR/LF
+    //     could split arguments on Windows shell-out paths
+    //   - require explicit http(s) scheme — the open crate forwards anything
+    //     it accepts, including file://, mailto:, and other registered handlers
+    if url.len() > 2048 {
+        return Err("URL too long".to_string());
+    }
+    if url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err("URL contains invalid characters".to_string());
+    }
     if !url.starts_with("https://") && !url.starts_with("http://") {
         return Err("Only http and https URLs can be opened".to_string());
+    }
+    if let Some(authority) = url.split("://").nth(1).and_then(|rest| rest.split('/').next()) {
+        if authority.contains('@') {
+            return Err("URLs with embedded credentials are not allowed".to_string());
+        }
     }
     open::that_detached(&url).map_err(|e| e.to_string())
 }
@@ -139,7 +195,7 @@ pub fn open_url(url: String) -> Result<(), String> {
 #[tauri::command]
 pub fn sync_toc_menu(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
     let Some(menu) = app.menu() else { return Ok(()) };
-    if let Some(MenuItemKind::Check(item)) = menu.get("toc-toggle") {
+    if let Some(item) = find_check_item(&menu, "toc-toggle") {
         item.set_checked(visible).map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -233,18 +289,11 @@ pub async fn sync_recent_menu(
                 .unwrap_or("");
             let short = shorten_path(parent);
             let label = if short.is_empty() { name.to_string() } else { format!("{name}  {short}") };
-            let exists = Path::new(path).is_file();
-            // Existing files get an indexed "rf-{gen}-{i}" ID for event dispatch.
-            // Missing files (shown grayed-out) get a "rfe-{gen}-{i}" ID; disabled items
-            // cannot be clicked so they never fire a menu event.
-            let id = if exists {
-                let idx = menu_paths.len();
-                menu_paths.push(path.clone());
-                format!("rf-{gen}-{idx}")
-            } else {
-                format!("rfe-{gen}-{}", menu_paths.len() + filtered.len())
-            };
-            let item = MenuItem::with_id(&app, id, label, exists, None::<&str>)
+            // All entries are enabled; missing-file handling happens on click in the
+            // frontend (loadFile catches the read error and offers to prune the entry).
+            let idx = menu_paths.len();
+            menu_paths.push(path.clone());
+            let item = MenuItem::with_id(&app, format!("rf-{gen}-{idx}"), label, true, None::<&str>)
                 .map_err(|e| e.to_string())?;
             sub.append(&item).map_err(|e| e.to_string())?;
         }
@@ -274,6 +323,73 @@ fn shorten_path(path: &str) -> String {
     path.to_string()
 }
 
+/// Enables or disables document-dependent menu items (Close File, Find in Document).
+/// Called with `true` after a file is successfully loaded, and `false` on close/welcome.
+#[tauri::command]
+pub fn sync_doc_menu(app: tauri::AppHandle, has_file: bool) -> Result<(), String> {
+    let Some(menu) = app.menu() else { return Ok(()) };
+    // close-file lives in File and find-in-doc in Edit; menu.get() only searches
+    // the root menu's direct children, so we walk submenus (same pattern as sync_nav_menu).
+    let Ok(top_items) = menu.items() else { return Ok(()) };
+    for top in top_items {
+        let MenuItemKind::Submenu(sub) = top else { continue };
+        let Ok(children) = sub.items() else { continue };
+        for child in children {
+            let MenuItemKind::MenuItem(mi) = child else { continue };
+            if matches!(mi.id().as_ref(), "close-file" | "find-in-doc") {
+                mi.set_enabled(has_file).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Opens the native file-open dialog, optionally starting in `start_dir`.
+/// `start_dir` may be a file path (the parent directory is used) or a directory
+/// path (used directly). Returns the chosen path, or `None` on cancel.
+/// Must be `async` for the same reason as sync_recent_menu: the dialog API
+/// dispatches to the main thread internally, which would deadlock a sync command.
+#[tauri::command]
+pub async fn open_file_dialog(
+    app: tauri::AppHandle,
+    start_dir: Option<String>,
+) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let (tx, rx) = std::sync::mpsc::channel::<Option<String>>();
+
+    let mut builder = app
+        .dialog()
+        .file()
+        .add_filter("Markdown", &["md", "markdown"])
+        .add_filter("All Files", &["*"]);
+
+    if let Some(p) = start_dir {
+        let path = std::path::Path::new(&p);
+        let dir = if path.is_dir() {
+            path.to_path_buf()
+        } else {
+            path.parent().unwrap_or(path).to_path_buf()
+        };
+        if dir.is_dir() {
+            builder = builder.set_directory(dir);
+        }
+    }
+
+    builder.pick_file(move |picked| {
+        let result = picked
+            .and_then(|p| p.into_path().ok())
+            .and_then(|p| std::fs::canonicalize(p).ok())
+            .filter(|p| p.is_file())
+            .map(|p| p.to_string_lossy().into_owned());
+        let _ = tx.send(result);
+    });
+
+    tauri::async_runtime::spawn_blocking(move || rx.recv().unwrap_or(None))
+        .await
+        .unwrap_or(None)
+}
+
 /// Syncs the View → Theme menu checkmarks with the preference stored in the
 /// frontend's localStorage. Called once on startup so the menu reflects the
 /// persisted choice rather than always defaulting to "System".
@@ -285,7 +401,7 @@ pub fn sync_theme_menu(app: tauri::AppHandle, preference: String) -> Result<(), 
         ("theme-light",  preference == "light"),
         ("theme-dark",   preference == "dark"),
     ] {
-        if let Some(MenuItemKind::Check(item)) = menu.get(id) {
+        if let Some(item) = find_check_item(&menu, id) {
             item.set_checked(checked).map_err(|e| e.to_string())?;
         }
     }

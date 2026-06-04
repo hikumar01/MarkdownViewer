@@ -36,7 +36,6 @@ body {
   flex: 1;
   overflow-y: auto;
   padding: 2rem 1.5rem 4rem;
-  width: 100%;
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
 }
@@ -184,7 +183,7 @@ figure.mermaid-broken {
 
 /* Broken-image icon via CSS mask so it inherits --text-muted */
 .img-broken::before,
-figure.mermaid-broken::before {
+.mermaid-broken-icon::before {
   content: '';
   display: block;
   width: 2rem;
@@ -197,8 +196,43 @@ figure.mermaid-broken::before {
   mask-mode: alpha;
 }
 
-.img-broken::after       { content: 'Image not found'; }
-figure.mermaid-broken::after { content: 'Diagram error'; }
+.img-broken::after { content: 'Image not found'; }
+
+.mermaid-broken-message {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-align: center;
+  word-break: break-word;
+}
+
+.mermaid-broken-source {
+  width: 100%;
+  max-height: 8rem;
+  overflow: auto;
+  font-size: 0.75rem;
+  background: color-mix(in srgb, var(--border) 15%, transparent);
+  border-radius: 4px;
+  padding: 0.5rem;
+  text-align: left;
+}
+
+figure.mermaid-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 160px;
+  min-height: 60px;
+  max-width: 100%;
+  margin: 1rem auto;
+  padding: 0.75rem 1.25rem;
+  background: color-mix(in srgb, var(--border) 15%, transparent);
+  border: 1.5px dashed var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+figure.mermaid-empty::after { content: 'Empty diagram'; }
 
 #content img {
   display: block;
@@ -216,6 +250,7 @@ figure.mermaid-broken::after { content: 'Diagram error'; }
 /* Code blocks: scroll horizontally rather than overflow the viewport. */
 #content pre {
   overflow-x: auto;
+  position: relative;
 }
 
 /* Tables: wrap in a scrollable block so wide tables don't break layout. */
@@ -479,4 +514,40 @@ html.dark #toc {
 
 .link-preview-tooltip.visible {
   opacity: 1;
+}
+
+/* ── Code block copy button ─────────────────────────────────────────── */
+
+.copy-btn {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  padding: 0.15rem 0.45rem;
+  font-size: 0.7rem;
+  font-family: inherit;
+  line-height: 1.4;
+  background: color-mix(in srgb, var(--border) 60%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 100ms, background 100ms, color 100ms;
+}
+
+#content pre:hover .copy-btn {
+  opacity: 1;
+}
+
+.copy-btn:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
+.copy-btn-success {
+  color: #3fb950;
+}
+
+html.dark .copy-btn-success {
+  color: #56d364;
 }

@@ -1,16 +1,44 @@
-# MarkdownViewer — Product Summary
+# Markdown Viewer — Product Summary
 
 **Fast, offline-first desktop markdown viewer with native diagram and code support.**
 
-MarkdownViewer renders GitHub-flavored Markdown beautifully — including Mermaid diagrams and syntax-highlighted code blocks — without sending your files to any server. Built with Tauri v2 (Rust + WebView), it runs natively on macOS and Windows with a small memory footprint and instant cold start.
+Markdown Viewer renders GitHub-flavored Markdown beautifully — including Mermaid diagrams and syntax-highlighted code blocks — without sending your files to any server. Built with Tauri v2 (Rust + WebView), it runs natively on macOS and Windows with a small memory footprint and instant cold start.
 
-Open a file once and the view stays current: MarkdownViewer watches for saves and re-renders automatically, with any editor. Navigate your documentation the way it was meant to be read — follow relative links between files, jump to anchored headings, go back with a keyboard shortcut.
+Open a file once and the view stays current: Markdown Viewer watches for saves and re-renders automatically, with any editor. Navigate your documentation the way it was meant to be read — follow relative links between files, jump to anchored headings, go back with a keyboard shortcut.
+
+---
+
+## Value Proposition
+
+Markdown Viewer is for people who want a dedicated reading surface for local Markdown without opening a full editor, browser extension, or cloud preview. It focuses on three promises:
+
+- **Private by design:** documents stay on disk; no telemetry, remote markdown fetches, or cloud rendering
+- **Useful for real docs:** Mermaid diagrams, GFM tables/task lists/footnotes, code highlighting, search, TOC, and history are all part of the default reading workflow
+- **Lightweight enough to leave open:** Tauri keeps the app small by using Rust for native integration and the OS WebView for rendering
+
+## How It Works
+
+```mermaid
+flowchart LR
+    A[Open local .md file] --> B[Rust validates path]
+    B --> C[Rust reads and watches file]
+    C --> D[TypeScript renders Markdown]
+    D --> E[Sanitize HTML]
+    E --> F[Render Mermaid SVG]
+    F --> G[Interactive viewer]
+
+    C -. file changed .-> D
+    D -. local image .-> H[markdownviewer:// protocol]
+    H --> I[Rust serves allowlisted image]
+```
+
+The backend owns file access and platform integration. The frontend owns rendering, navigation, search, theme switching, TOC behavior, and recent-file state. The two communicate through typed Tauri commands and events.
 
 ---
 
 ## Who It's For
 
-| Audience | Why MarkdownViewer |
+| Audience | Why Markdown Viewer |
 |---|---|
 | **Engineers** | Preview READMEs, ADRs, and architecture diagrams locally with zero setup — Mermaid renders inline, code is VS Code–quality highlighted |
 | **Technical writers** | Live preview that matches what GitHub renders, including callout-style blockquotes and tables — no browser extension, no upload |
@@ -33,9 +61,10 @@ Open a file once and the view stays current: MarkdownViewer watches for saves an
 | **Table of Contents** | Floating TOC panel with scroll-spy; H1–H6 hierarchy; click-to-jump; toggle with Cmd+Shift+T |
 | **In-document Search** | Cmd+F; real-time match highlighting; match count; next/previous navigation; Escape to close |
 | **Recent Files** | Last 10 opened files in File → Open Recent; persists across restarts |
+| **Code Copy** | One-click "Copy" button on every fenced code block; visual confirmation on copy |
 | **Theme** | Follows OS appearance; manual override to Light, Dark, or System; zero flash on startup or switch |
-| **Persistence** | Window position, size, theme preference, TOC visibility, and recent files restored on every relaunch |
-| **Security** | Fully offline; no telemetry; path traversal guards at every file entry point; strict CSP |
+| **Persistence** | Window position, size, theme preference, TOC visibility, recent files, and last-opened file restored on every relaunch |
+| **Security** | Local-first; no telemetry; path traversal guards at every file entry point; remote image/font beacons blocked; strict CSP |
 
 ---
 
@@ -43,7 +72,7 @@ Open a file once and the view stays current: MarkdownViewer watches for saves an
 
 ### GitHub-Flavored Markdown
 
-MarkdownViewer renders the complete CommonMark spec plus every GFM extension:
+Markdown Viewer renders the complete CommonMark spec plus every GFM extension:
 
 - **Tables** with left, center, and right column alignment
 - **Task lists** (`- [ ]` / `- [x]`) with correct checkbox rendering
@@ -70,6 +99,8 @@ All Mermaid v11 diagram types render as inline SVG directly in the document. Dia
 
 **Supported types:** flowchart, sequence, class, state, entity-relationship, Gantt, git graph, pie, user journey, mindmap, timeline, quadrant chart, XY chart. Unknown or future diagram types show a neutral placeholder instead of crashing.
 
+**Error display:** When a diagram fails to parse, the error block shows the Mermaid error message as inline text plus the raw diagram source in a scrollable code block — so the syntax error is visible without switching to an editor. Empty `mermaid` blocks show a neutral "Empty diagram" placeholder instead of crashing.
+
 > **For engineers:** Mermaid blocks are extracted from the rehype AST **before** Shiki runs (by `rehypeExtractMermaid`). Shiki skips `pre.mermaid-source` by class — preventing a double-processing conflict. Mermaid renders **after** the HTML is in the DOM so it can measure containers and produce correctly sized SVGs.
 >
 > SVG output is sanitized with a custom DOM-based sanitizer — not DOMPurify. DOMPurify's namespace validation strips HTML-namespace children (`div`, `span`, `p`) out of SVG-namespace `<foreignObject>`, which is exactly how Mermaid v11 renders node labels. The custom sanitizer parses via `div.innerHTML` (correct HTML5 content-mode switching), removes `<script>` elements and `on*` / `javascript:` / non-image `data:` URI attributes in-place, and transfers nodes into a `DocumentFragment` without re-serializing.
@@ -77,6 +108,8 @@ All Mermaid v11 diagram types render as inline SVG directly in the document. Dia
 > `securityLevel: 'loose'` is required for inline SVG (vs iframe). The post-render sanitizer compensates for the reduced Mermaid-internal security.
 >
 > Diagram source strings are stored in `figure.dataset.mermaidSrc` — theme changes re-render diagrams in-place without re-reading the file.
+>
+> Error figures (`figure.mermaid-broken`) are built from child elements (`span.mermaid-broken-icon`, `p.mermaid-broken-message`, `pre.mermaid-broken-source`) rather than CSS pseudo-elements so the dynamic error message and source text can be injected as real DOM content. Empty diagrams (`figure.mermaid-empty`) are caught before `mermaid.render()` is called.
 >
 > See [Diagram Renderer decision](./architecture.md#diagram-renderer-mermaidjs).
 
@@ -94,11 +127,26 @@ Wide code blocks scroll horizontally rather than overflowing the viewport.
 
 ---
 
+### Code Block Copy Button
+
+Every fenced code block has a small **Copy** button in its top-right corner. Clicking it copies the raw code (without syntax-highlight markup) to the clipboard. The label flips to **Copied!** for ~1.5 seconds as visual confirmation, then resets.
+
+- Works on every Shiki-rendered code block — all 100+ supported languages
+- Copies the original source text, never the highlighted HTML
+- Silent on clipboard-permission failure (no error dialog interrupting the read)
+- Mermaid blocks are not affected — they render as diagrams, not code
+
+> **For engineers:** Implemented in [`ui/renderer/codeBlocks.ts`](../ui/renderer/codeBlocks.ts) by `attachCopyButtons(container)`, called from `loadFile` in `main.ts` after `renderMermaidBlocks`. The function iterates `pre.shiki` elements and appends a `button.copy-btn`; `code.textContent` is the source-of-truth for the copied string (Shiki's `<span>` highlight markup is plain-text-equivalent). `navigator.clipboard.writeText` failures are swallowed because permission prompts in the WebView are non-fatal to the read experience.
+
+---
+
 ### Local Images
 
 Images referenced with relative paths resolve from the directory of the open file — the same way GitHub renders them. While loading, a skeleton placeholder appears. If the file is missing or fails, a broken-image placeholder appears with the path as a hover tooltip.
 
-> **For engineers:** Relative `src` values are rewritten to `markdownviewer://{resolved-path}` by the `rehypeResolveImages` HAST plugin. The rewrite includes a `startsWith(basePath)` traversal guard — images outside the open file's directory tree are rejected before the request reaches Rust.
+> **For engineers:** Relative `src` values are rewritten to `markdownviewer://{resolved-path}` by the `rehypeResolveImages` HAST plugin. The rewrite includes a `startsWith(basePath)` traversal guard — images outside the open file's directory tree are stripped before any request reaches Rust.
+>
+> Author-supplied URI schemes are not trusted. `http:`, `https:`, `file:`, and literal `markdownviewer:` image sources are stripped from rendered images; only renderer-created `markdownviewer://` URLs, `data:`, and `blob:` sources survive. CSP backs this up by omitting remote image and font origins.
 >
 > The Rust URI scheme handler (`app/src/protocol.rs`) receives every request, calls `canonicalize()` to resolve symlinks and reject traversal at the OS level, checks `is_file()`, and validates the extension against an allowlist (png, jpg, jpeg, gif, webp, svg, avif, bmp, tiff, ico). `file://` is intentionally never used — it would give untrusted markdown content unrestricted filesystem read access.
 >
@@ -108,14 +156,14 @@ Images referenced with relative paths resolve from the directory of the open fil
 
 ### File Opening
 
-MarkdownViewer accepts files from every standard entry point:
+Markdown Viewer accepts files from every standard entry point:
 
 | Method | How |
 |---|---|
 | **Menu / keyboard** | File → Open File… or Cmd+O |
 | **Drag and drop** | Drop any `.md` or `.markdown` file onto the window — if no document is open it loads immediately; if one is open, a native confirmation dialog appears |
 | **Finder double-click** | Registered as an "Open With" handler; can be set as the system default viewer for `.md` files |
-| **CLI** | `MarkdownViewer /path/to/file.md` |
+| **CLI** | `Markdown Viewer /path/to/file.md` |
 | **Deep link** | `open "markdownviewer:///path/to/file.md"` from Terminal or any other app |
 
 > **For engineers:** All entry points funnel through `safe_markdown_path` / `canonical_markdown_path` in Rust before any path reaches the frontend. These functions call `fs::canonicalize` (resolves symlinks, rejects traversal and non-existent paths) and enforce the `.md` / `.markdown` extension check.
@@ -130,7 +178,7 @@ MarkdownViewer accepts files from every standard entry point:
 
 ### Live Reload
 
-The rendered view updates automatically within milliseconds of the file being saved — with any editor. There is no polling; the OS notifies MarkdownViewer directly.
+The rendered view updates automatically within milliseconds of the file being saved — with any editor. There is no polling; the OS notifies Markdown Viewer directly.
 
 > **For engineers:** File watching uses the `notify` crate — FSEvents on macOS (kernel-level, zero polling latency), ReadDirectoryChangesW on Windows. Atomic saves (the write-then-rename pattern used by VS Code, Vim `writebackup`, JetBrains IDEs) produce a `Modify(Name(_))` event. The handler checks `Path::is_file()` on the watched path to distinguish "renamed over" (new content → `file-changed`) from "renamed away" (file gone → `file-deleted`).
 >
@@ -205,12 +253,12 @@ The last 10 opened files are available under File → Open Recent for quick acce
 
 - **Most-recently-used first:** the most recently opened file appears at the top of the submenu
 - **Shortened paths:** each entry shows the filename with an abbreviated parent path (e.g., `README.md  ~/Documents/project`)
-- **Missing files:** entries for files that no longer exist are shown grayed out (disabled); clicking them would show "File not found" and remove the entry from the list
+- **Missing files:** stale entries are pruned after a failed open, with a confirmation when the stale path came from the persisted recent list
 - **Current file excluded:** the currently open file is not shown in the recent list while it is already open
 - **Clear:** "Clear Recent Files" at the bottom of the submenu clears the entire list
 - **Persists:** the list survives app restarts via localStorage
 
-> **For engineers:** The list is stored as a JSON array in `localStorage['markview-recent']`. `ui/events/recent.ts` owns all read/write operations — `addToRecent`, `removeFromRecent`, `clearRecent`, and `syncRecentMenu`.
+> **For engineers:** The list is stored as a JSON array in `localStorage['recent']` through the best-effort storage helper. `ui/events/recent.ts` owns all read/write operations — `addToRecent`, `removeFromRecent`, `clearRecent`, and `syncRecentMenu`.
 >
 > The native "Open Recent" submenu is rebuilt by the `sync_recent_menu` Tauri command (in `commands.rs`) on every file open, file close, and startup. This command is `async` — all Tauri menu APIs (`remove_at`, `append`, `MenuItem::with_id`) dispatch to the main thread internally via `run_main_thread!`. A sync command running on the main thread would deadlock waiting for itself.
 >
@@ -222,7 +270,7 @@ The last 10 opened files are available under File → Open Recent for quick acce
 
 ### Light / Dark Theme
 
-MarkdownViewer follows the OS appearance setting by default and switches instantly — no restart, no flicker. Prose, code blocks, Mermaid diagrams, and all UI chrome update together.
+Markdown Viewer follows the OS appearance setting by default and switches instantly — no restart, no flicker. Prose, code blocks, Mermaid diagrams, and all UI chrome update together.
 
 **Manual override** is available under View → Theme:
 
@@ -234,7 +282,7 @@ MarkdownViewer follows the OS appearance setting by default and switches instant
 
 The active choice is shown with a checkmark in the menu and persists across relaunches. Switching takes effect immediately.
 
-> **For engineers:** Theme preference is stored in `localStorage['markview-theme']` (values: `'light'` | `'dark'` | `'system'`). An inline synchronous `<script>` in `<head>` reads this key and adds `html.dark` to the document element before any CSS renders — eliminating the flash of unstyled content (FOUC) on startup.
+> **For engineers:** Theme preference is stored in `localStorage['theme']` (values: `'light'` | `'dark'` | `'system'`). An inline synchronous `<script>` in `<head>` reads this key and adds `html.dark` to the document element before any CSS renders — eliminating the flash of unstyled content (FOUC) on startup.
 >
 > OS preference changes fire `window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', ...)` in `ui/events/theme.ts`, but only when the preference is `'system'`; manual overrides suppress OS events entirely.
 >
@@ -246,18 +294,26 @@ The active choice is shown with a checkmark in the menu and persists across rela
 
 ### Session Persistence
 
-On relaunch, MarkdownViewer opens at exactly the same window size and position as when it was last closed — even after a monitor configuration change. The theme preference (System / Light / Dark) is also restored.
+On relaunch, Markdown Viewer opens at exactly the same window size and position as when it was last closed — even after a monitor configuration change. The theme preference (System / Light / Dark), TOC visibility, recent-files list, and **the file you were last viewing** are all restored.
 
-> **For engineers:** Window bounds are managed automatically by `tauri-plugin-window-state`. The plugin validates restored bounds against available displays and resets to centered if the saved position is off-screen (e.g., after disconnecting a secondary monitor). Theme preference persists via `localStorage` as described above. No additional persistence layer is needed for the current feature set.
+- **Window bounds:** position and size restored; off-screen positions are auto-centered
+- **Theme:** System / Light / Dark choice persisted across launches
+- **Last-opened file:** the document you closed the app on reopens automatically; if it was deleted or moved in the meantime, the welcome screen appears instead — silently, no error dialog
+- **Cold-launch precedence:** if you launch by double-clicking a `.md` file in Finder while the app was previously closed, the double-clicked file wins over the restored file
+
+> **For engineers:** Window bounds are managed automatically by `tauri-plugin-window-state`. The plugin validates restored bounds against available displays and resets to centered if the saved position is off-screen (e.g., after disconnecting a secondary monitor). Theme preference persists via `localStorage`.
+>
+> Last-opened file restoration uses `localStorage['lastFilePath']`, written in `loadFile` after a successful read. On `DOMContentLoaded`, [main.ts](../ui/main.ts) first calls `get_pending_open` (which returns a `Some(path)` if `RunEvent::Opened` queued one during cold launch — Finder double-click before the WebView was ready); only when that returns `None` does it fall back to `lastFilePath`. A failing restore call clears the key so a permanently-stale path cannot loop on every launch. The Rust-side `PendingOpen` is a take-once `Mutex<Option<String>>` so the value cannot replay across windows.
 
 ---
 
 ## Security
 
-MarkdownViewer is designed to be safe to open untrusted markdown files from the internet.
+Markdown Viewer is designed to be safe to open untrusted markdown files from the internet.
 
 **What it never does:**
-- Makes network requests (the WebView's CSP blocks outbound connections)
+- Uploads document content or fetches remote Markdown
+- Loads remote images or fonts from untrusted documents
 - Sends telemetry or usage data
 - Passes file paths or content to external services
 - Executes `<script>` tags or `on*` event handlers from markdown
@@ -268,6 +324,7 @@ MarkdownViewer is designed to be safe to open untrusted markdown files from the 
 |---|---|
 | Rust path validation | Every path from any source (drag-drop, CLI, deep link, IPC) goes through `fs::canonicalize` + extension check before any filesystem operation |
 | `markdownviewer://` protocol | Local images served through a custom URI handler with allowlisted extensions and path traversal rejection — `file://` is never used |
+| Image source policy | Renderer strips author-supplied remote, absolute, and custom-protocol image URLs; CSP allows only self, `markdownviewer:`, `data:`, and `blob:` images |
 | `rehypeSanitize` | Strips disallowed HTML from the rendering AST before stringification |
 | DOMPurify | Final DOM-level pass after `innerHTML` injection — defense-in-depth against pipeline edge cases |
 | Custom SVG sanitizer | Post-Mermaid DOM walk: removes `<script>`, `on*` attributes, `javascript:` and non-image `data:` URIs |
@@ -294,7 +351,7 @@ flowchart TB
         end
         subgraph BE["Rust Backend · Tauri v2"]
             direction TB
-            lib["lib.rs — app setup · menus · routing"]
+            mainrs["main.rs — app setup · menus · routing"]
             cmds["commands.rs — IPC command handlers"]
             proto["protocol.rs — markdownviewer:// serving"]
         end
@@ -315,7 +372,7 @@ flowchart TB
 
 - The frontend has no direct filesystem access — all reads go through `read_file` / `watch_file` Tauri commands
 - Every path received from the frontend is re-validated in Rust before use (`canonical_markdown_path`)
-- The WebView's CSP prevents arbitrary network requests and script injection
+- The WebView's CSP prevents arbitrary script execution, remote fetches, and image/font beacons
 - The unified processor is frozen at module load — rendering is stateless and safe to call from any event handler
 
 **Source layout:**
@@ -326,14 +383,16 @@ flowchart TB
 | `ui/renderer/pipeline.ts` | Frozen unified processor, all rehype plugins |
 | `ui/renderer/mermaid.ts` | Mermaid init, render, theme re-render, SVG sanitizer |
 | `ui/renderer/sanitize.ts` | `sanitizeOptions` extending `rehypeSanitize` defaultSchema |
+| `ui/renderer/codeBlocks.ts` | Copy-to-clipboard buttons attached to Shiki code blocks |
 | `ui/events/theme.ts` | Theme detection, preference persistence, OS change listener |
 | `ui/events/links.ts` | Click delegation — anchor scroll, external open, MD navigation |
 | `ui/events/drag.ts` | Native drag-drop overlay and file-open handler |
 | `ui/events/toc.ts` | TOC panel — build from DOM, scroll-spy via IntersectionObserver, toggle, persistence |
 | `ui/events/search.ts` | In-document search — mark.js integration, match navigation, open/close |
-| `ui/events/recent.ts` | Recent files — localStorage read/write, native submenu sync |
+| `ui/events/recent.ts` | Recent files — guarded localStorage read/write, native submenu sync |
+| `ui/events/storage.ts` | Safe localStorage wrapper used by theme, TOC, recents, and restore state |
 | `ui/styles/app.css` | App chrome, image states, Mermaid states, drag overlay, TOC panel, search bar |
-| `app/src/lib.rs` | Tauri app setup, menu construction, event routing |
+| `app/src/main.rs` | Tauri app setup, menu construction, event routing |
 | `app/src/commands.rs` | All `#[tauri::command]` handlers |
 | `app/src/protocol.rs` | `markdownviewer://` URI scheme — secure local file serving |
 
@@ -372,4 +431,4 @@ For planned shortcuts (Cmd+K, Cmd++/−/0, and more), see [Planned Keyboard Shor
 - [Architecture](./architecture.md) — deep-dive: rendering pipeline, security model, IPC reference, file watching, theme system
 - [Technology Decisions](./architecture.md#technology-decisions) — full rationale for every major technology choice
 - [Unimplemented Features](./unimplemented.md) — open gaps and implementation guides for contributors
-- [Backlog (P3–P7)](./unimplemented.md#backlog-overview) — prioritized future feature pipeline
+- [Backlog](./unimplemented.md#backlog-overview) — prioritized future feature pipeline

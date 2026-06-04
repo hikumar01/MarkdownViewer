@@ -11,6 +11,7 @@ import { visit } from 'unist-util-visit'
 import type { Plugin } from 'unified'
 import type { Root as HastRoot, Element } from 'hast'
 import { sanitizeOptions } from './sanitize'
+import { resolveWithinBase } from './resolvePath'
 
 // ---------------------------------------------------------------------------
 // rehypeExtractMermaid
@@ -55,41 +56,19 @@ const rehypeExtractMermaid: Plugin<[], HastRoot> = () => {
 // ---------------------------------------------------------------------------
 
 const PASSTHROUGH_PREFIXES = [
-  'http://',
-  'https://',
   'data:',
-  'markdownviewer:',
   'blob:',
 ] as const
 
-function isRemoteOrResolved(src: string): boolean {
+function isInlineImageSource(src: string): boolean {
   return PASSTHROUGH_PREFIXES.some((prefix) => src.startsWith(prefix))
 }
 
-// Resolve a relative path against basePath without using node:path — that
-// module is a Node.js built-in unavailable in the Tauri WebView environment.
-// Returns '' (rejected) for absolute paths or any traversal that escapes basePath.
-// Decodes percent-encoded characters first so that %2e%2e (encoded ..) is caught
-// as a traversal attempt before the OS-level check in protocol.rs.
+// Resolve a relative path against basePath. Delegates to the shared
+// resolveWithinBase helper, which rejects absolute paths, URI schemes,
+// embedded NULs, and traversal escapes (see resolvePath.ts).
 function resolveLocalPath(basePath: string, src: string): string {
-  let decoded: string
-  try {
-    decoded = decodeURIComponent(src)
-  } catch {
-    return ''  // malformed percent-encoding — reject
-  }
-  if (decoded.startsWith('/')) return ''  // Reject absolute paths — only relative allowed
-  const base = basePath.endsWith('/') ? basePath : basePath + '/'
-  const parts = (base + decoded).split('/')
-  const resolved: string[] = []
-  for (const part of parts) {
-    if (part === '..') { resolved.pop() }
-    else if (part !== '.') { resolved.push(part) }
-  }
-  const result = resolved.join('/')
-  // Reject directory traversal — the resolved path must stay within basePath.
-  if (!result.startsWith(base)) return ''
-  return result
+  return resolveWithinBase(basePath, src) ?? ''
 }
 
 // WHY basePath comes from file.data rather than a plugin option: the processor
@@ -107,9 +86,12 @@ const rehypeResolveImages: Plugin<[], HastRoot> = () => {
       if (node.tagName !== 'img') return
       const src = node.properties?.src
       if (typeof src !== 'string' || src === '') return
-      if (isRemoteOrResolved(src)) return
+      if (isInlineImageSource(src)) return
       const resolved = resolveLocalPath(basePath, src)
-      if (!resolved) return  // traversal or absolute path rejected
+      if (!resolved) {
+        delete node.properties.src
+        return
+      }
       node.properties.src = `markdownviewer://${resolved}`
     })
   }

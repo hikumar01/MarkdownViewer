@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """
-markview setup script — checks and installs all prerequisites,
-then fetches JS and Rust dependencies.
+Markdown Viewer setup script — checks local tooling, installs missing package
+manager support where possible, then prepares the Tauri workspace.
 
 Usage:
     python3 setup.py          # full setup
     python3 setup.py --check  # check prereqs without installing anything
 
 What this does:
-  1. Checks (and optionally installs) Rust, Node.js, pnpm
-  2. pnpm install  — JS dependencies
-  3. cargo fetch   — pre-downloads Rust crates (includes resvg + icon crates)
-  4. pnpm build    — compiles the frontend to dist/ so cargo build works
-                     standalone (e.g. for IDE / rust-analyzer support)
+    1. Checks Python, Rust, Node.js, pnpm, and platform prerequisites
+    2. Enables pnpm through Corepack when pnpm is missing
+    3. pnpm install  — JavaScript dependencies for the Vite/WebView frontend
+    4. cargo fetch   — Rust dependencies from app/Cargo.toml
+    5. pnpm build    — compiles ui/ into dist/ so standalone cargo tooling works
+                                         (for example IDE / rust-analyzer support)
 
   App icons are generated automatically from icons/icon.svg the first time
   `cargo build` runs (via build.rs). No manual step required.
@@ -53,6 +54,7 @@ APP  = ROOT / "app"
 
 MIN_NODE_MAJOR = 18
 MIN_PNPM_MAJOR = 9
+PINNED_PNPM_VERSION = "11.1.2"
 MIN_RUST_MINOR = 77  # 1.77
 
 
@@ -183,6 +185,11 @@ def install_pnpm() -> bool:
             fail("Could not install pnpm automatically")
             info("Run manually:  npm install -g pnpm")
             return False
+    else:
+        prepared = run(["corepack", "prepare", f"pnpm@{PINNED_PNPM_VERSION}", "--activate"])
+        if prepared.returncode != 0:
+            warn(f"Corepack enabled, but pnpm@{PINNED_PNPM_VERSION} activation failed")
+            info("The packageManager field in package.json will still request the pinned pnpm version")
     ok("pnpm installed")
     return True
 
@@ -231,14 +238,14 @@ def frontend_build() -> bool:
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="markview environment setup")
+    parser = argparse.ArgumentParser(description="markdownviewer environment setup")
     parser.add_argument(
         "--check", action="store_true",
         help="Check prerequisites only, do not install anything",
     )
     args = parser.parse_args()
 
-    hdr("markview — environment check")
+    hdr("markdownviewer — environment check")
 
     # Python is already running so just report version
     check_python()
