@@ -1,13 +1,13 @@
-# MarkdownViewer
+# Markdown Viewer
 
-A fast, offline-first desktop markdown viewer with Mermaid diagram rendering and syntax highlighting. Built with Tauri v2 (Rust + WebView).
+A fast, offline-first desktop Markdown viewer for local documentation, diagrams, and code-heavy notes. Built with Tauri v2, it keeps filesystem access in Rust and renders in the OS WebView without uploading document content or depending on a remote service.
 
 ## Features
 
 - GitHub-flavored Markdown rendering (tables, strikethrough, task lists, footnotes, raw HTML)
 - Mermaid diagram rendering — all types (flowchart, sequence, class, ER, Gantt, git, pie, mindmap, and more)
 - Syntax-highlighted code blocks with dual light/dark themes (Shiki, 100+ languages)
-- Local image rendering via `markdownviewer://` custom protocol (no arbitrary file exposure)
+- Local image rendering via `markdownviewer://` custom protocol; remote image and font loads are blocked by CSP
 - File → Open File… (`Cmd+O`), drag-and-drop, Finder double-click, deep links (`markdownviewer:///path`)
 - File → Open Recent — last 10 files, persisted across restarts
 - Live reload when the file changes on disk (FSEvents / ReadDirectoryChangesW)
@@ -17,8 +17,14 @@ A fast, offline-first desktop markdown viewer with Mermaid diagram rendering and
 - External link preview tooltip; anchor scroll to headings
 - Light/dark theme that follows the OS, with manual override; FOUC-free startup
 - `.md` / `.markdown` file type association; window state persisted across sessions
+- One-click **Copy** button on every fenced code block
+- Last-opened file is restored automatically on the next launch
 
 See [docs/product-summary.md](docs/product-summary.md) for full feature details.
+
+## Documentation vs. Implementation
+
+The feature set described in [docs/product-summary.md](docs/product-summary.md) is the implemented baseline. Open work, accepted follow-up ideas, and design questions are tracked separately in [docs/unimplemented.md](docs/unimplemented.md) so product messaging and backlog planning do not blur together.
 
 ## Prerequisites
 
@@ -26,7 +32,7 @@ See [docs/product-summary.md](docs/product-summary.md) for full feature details.
 |------|-------------|---------|
 | Rust + Cargo | 1.77 | https://rustup.rs |
 | Node.js | 18 | https://nodejs.org |
-| pnpm | 9 | `npm install -g pnpm` or `corepack enable` |
+| pnpm | 9+ (repo pinned to 11.1.2) | `corepack enable` or `npm install -g pnpm` |
 | Python | 3.8 | https://python.org (for `setup.py` only) |
 
 **macOS**: Xcode Command Line Tools required (`xcode-select --install`).  
@@ -38,7 +44,7 @@ See [docs/product-summary.md](docs/product-summary.md) for full feature details.
 python3 setup.py
 ```
 
-The script checks all prerequisites, installs what it can automatically, fetches all dependencies, and prints the next step.
+The script checks Rust, Node.js, pnpm, and platform prerequisites, installs what it can safely install, runs `pnpm install`, pre-fetches Rust crates from `app/`, and builds the frontend once so standalone Cargo tooling can resolve `dist/`.
 
 ## Manual Setup
 
@@ -85,15 +91,32 @@ All major technology decisions and their full rationale are in [`docs/architectu
 - **remark/unified** over markdown-it — structural `~`/`~~` delimiter disambiguation; AST source positions ([Markdown Parser](docs/architecture.md#markdown-parser-remarkunified))
 - **Shiki** for syntax highlighting — VS Code token accuracy; dual-theme via CSS variables; no FOUC ([Syntax Highlighter](docs/architecture.md#syntax-highlighter-shiki))
 - **Mermaid.js** for diagrams — runs entirely in the WebView, no server needed ([Diagram Renderer](docs/architecture.md#diagram-renderer-mermaidjs))
-- **`markdownviewer://` custom protocol** — serves local images without exposing `file://` ([Security Model](docs/architecture.md#security-model))
+- **`markdownviewer://` custom protocol** — serves renderer-approved local images without exposing `file://` ([Security Model](docs/architecture.md#security-model))
 
 ## Documentation
 
 | File | Theme | Contents |
 |---|---|---|
-| [docs/product-summary.md](docs/product-summary.md) | **Shipped** | All features live in the current release; keyboard shortcuts |
-| [docs/unimplemented.md](docs/unimplemented.md) | **Open** | Gaps, P2 quality improvements, full backlog overview (P3–P7), open points, deferred scope |
-| [docs/architecture.md](docs/architecture.md) | **Technical** | System design, technology decisions, security model, IPC reference, rendering pipeline |
+| [docs/product-summary.md](docs/product-summary.md) | **Product** | Value proposition, shipped workflows, user benefits, concise technical context |
+| [docs/architecture.md](docs/architecture.md) | **Technical** | System design, current runtime surface, technology decisions, security model, IPC reference |
+| [docs/unimplemented.md](docs/unimplemented.md) | **Backlog** | Known gaps, implementation sketches, future feature ideas, open design questions |
+
+## Security Posture
+
+Markdown Viewer is safe to use with untrusted Markdown files as a local viewer: markdown content is sanitized before DOM insertion, Mermaid SVG output gets a second sanitizer, file paths are canonicalized in Rust, and the frontend has no direct filesystem or shell plugin permissions. The CSP allows only self-hosted scripts plus the exact hashed theme bootstrap, blocks remote image/font beacons, and permits local images only through the custom protocol.
+
+## LocalStorage Keys
+
+The app uses these browser localStorage keys:
+
+- `theme`
+- `recent`
+- `toc`
+
+On macOS, these values are persisted by WKWebView under:
+
+- Dev (`pnpm dev`): `~/Library/WebKit/markdownviewer/WebsiteData/LocalStorage`
+- Bundled release app (`pnpm bundle` output): `~/Library/WebKit/com.markdownviewer/WebsiteData/LocalStorage`
 
 ## Lock Files
 

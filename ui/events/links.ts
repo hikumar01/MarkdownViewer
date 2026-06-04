@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { resolveWithinBase } from '../renderer/resolvePath'
 
 let tooltip: HTMLDivElement | null = null
 let hoverTimer: number | null = null
@@ -45,19 +46,11 @@ function isMdLink(href: string): boolean {
 // Mirrors the resolveLocalPath logic in pipeline.ts: any resolved path that
 // does not stay within basePath is rejected — preventing .md link navigation
 // from reaching files outside the open document's directory tree.
+// Resolve a relative .md href against basePath, dropping any query/fragment
+// before delegating to the shared traversal-safe resolver.
 function resolveMdPath(href: string): string | null {
-  if (!basePath) return null
   const hrefPath = (href.split('?')[0] ?? '').split('#')[0] ?? ''
-  const base = basePath.endsWith('/') ? basePath : basePath + '/'
-  const parts = (base + hrefPath).split('/')
-  const resolved: string[] = []
-  for (const part of parts) {
-    if (part === '..') { resolved.pop() }
-    else if (part !== '.') resolved.push(part)
-  }
-  const result = resolved.join('/')
-  if (!result.startsWith(base)) return null
-  return result || null
+  return resolveWithinBase(basePath, hrefPath)
 }
 
 export function attachLinkHandlers(

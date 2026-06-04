@@ -4,7 +4,9 @@ interface TocEntry {
   level: number
 }
 
-const STORAGE_KEY = 'markview-toc'
+import { getStorageItem, setStorageItem } from './storage'
+
+const STORAGE_KEY = 'toc'
 
 let observer: IntersectionObserver | null = null
 let activeId: string | null = null
@@ -21,7 +23,7 @@ function getPanel(): HTMLElement {
 }
 
 export function isTocVisible(): boolean {
-  return localStorage.getItem(STORAGE_KEY) !== 'closed'
+  return getStorageItem(STORAGE_KEY) !== 'closed'
 }
 
 function applyVisibility(panel: HTMLElement, visible: boolean): void {
@@ -31,7 +33,7 @@ function applyVisibility(panel: HTMLElement, visible: boolean): void {
 
 export function toggleToc(): boolean {
   const next = !isTocVisible()
-  localStorage.setItem(STORAGE_KEY, next ? 'open' : 'closed')
+  setStorageItem(STORAGE_KEY, next ? 'open' : 'closed')
   applyVisibility(getPanel(), next)
   return next
 }

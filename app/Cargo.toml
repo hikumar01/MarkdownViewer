@@ -1,5 +1,5 @@
 [package]
-name = "markdown_viewer"
+name = "markdownviewer"
 version = "0.1.0"
 description = "A fast markdown + mermaid viewer"
 authors = []
@@ -8,11 +8,8 @@ edition = "2021"
 rust-version = "1.77.2"
 
 [[bin]]
-name = "markdown_viewer"
+name = "markdownviewer"
 path = "src/main.rs"
-
-[lib]
-name = "markdown_viewer_lib"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
