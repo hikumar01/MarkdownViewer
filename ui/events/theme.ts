@@ -10,9 +10,9 @@ export type Theme = 'default' | 'dark'
 // caused a visible flash of unstyled markdown.
 import lightCss from 'github-markdown-css/github-markdown-light.css?inline'
 import darkCss from 'github-markdown-css/github-markdown-dark.css?inline'
-import { getStorageItem, setStorageItem } from './storage'
+import { getThemePreference, setThemePreference, hasThemePreference } from '../settings'
 
-const PREF_KEY = 'theme'
+export { getThemePreference } from '../settings'
 
 let markdownStyleEl: HTMLStyleElement | null = null
 
@@ -23,11 +23,6 @@ function applyMarkdownTheme(theme: Theme): void {
     document.head.appendChild(markdownStyleEl)
   }
   markdownStyleEl.textContent = theme === 'dark' ? darkCss : lightCss
-}
-
-export function getThemePreference(): ThemePreference {
-  const v = getStorageItem(PREF_KEY)
-  return v === 'light' || v === 'dark' || v === 'system' ? v : 'system'
 }
 
 function resolveTheme(pref: ThemePreference): Theme {
@@ -45,7 +40,7 @@ function applyTheme(theme: Theme): void {
 export function applyThemePreference(pref: ThemePreference): Theme {
   const theme = resolveTheme(pref)
   applyTheme(theme)
-  setStorageItem(PREF_KEY, pref)
+  setThemePreference(pref)
   return theme
 }
 
@@ -56,8 +51,8 @@ export function detectTheme(): Theme {
   const pref = getThemePreference()
   // Persist the explicit default so subsequent `getThemePreference` calls
   // (and the inline boot script's lookup) see a concrete value.
-  if (getStorageItem(PREF_KEY) === null) {
-    setStorageItem(PREF_KEY, pref)
+  if (!hasThemePreference()) {
+    setThemePreference(pref)
   }
   const theme = resolveTheme(pref)
   applyTheme(theme)

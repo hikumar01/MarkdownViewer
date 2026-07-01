@@ -41,6 +41,45 @@ fn path_from_deep_link(url: &str) -> Option<&str> {
     Some(rest)
 }
 
+/// Guards against off-screen window restoration. `tauri-plugin-window-state`
+/// has a long-standing macOS bug: it reads `outer_position()` (which includes an
+/// invisible title-bar offset) and re-applies that offset on restore, so the
+/// saved rect drifts downward on each launch and — in packaged builds — can end
+/// up below the visible screen. (Disconnecting a monitor between launches causes
+/// the same "restored off-screen" symptom on every platform.)
+///
+/// After the plugin has restored the window, validate the rect against the
+/// window's monitor (falling back to the primary monitor when the window is so
+/// far off-screen that it reports none) and clamp it fully back into bounds. A
+/// single launch heals a bad saved position; a window already fully on-screen is
+/// left untouched, so normal position memory still works.
+fn ensure_window_on_screen<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+    let (Ok(pos), Ok(size)) = (window.outer_position(), window.outer_size()) else { return };
+
+    let monitor = match window.current_monitor() {
+        Ok(Some(m)) => Some(m),
+        _ => window.primary_monitor().ok().flatten(),
+    };
+    let Some(monitor) = monitor else { return };
+
+    let m_pos = monitor.position();
+    let m_size = monitor.size();
+    let (win_w, win_h) = (size.width as i32, size.height as i32);
+    let (mon_x, mon_y) = (m_pos.x, m_pos.y);
+    let (mon_w, mon_h) = (m_size.width as i32, m_size.height as i32);
+
+    // Largest top-left that still keeps the window fully inside the monitor; when
+    // the window is bigger than the monitor, pin to the monitor's top-left.
+    let max_x = (mon_x + mon_w - win_w).max(mon_x);
+    let max_y = (mon_y + mon_h - win_h).max(mon_y);
+    let new_x = pos.x.clamp(mon_x, max_x);
+    let new_y = pos.y.clamp(mon_y, max_y);
+
+    if new_x != pos.x || new_y != pos.y {
+        let _ = window.set_position(tauri::PhysicalPosition::new(new_x, new_y));
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -65,6 +104,13 @@ fn main() {
         .setup(|app| {
             build_menu(app)?;
 
+            // The window-state plugin restores position during window creation
+            // (before this hook runs); pull the window back on-screen if that
+            // restore placed it off the visible area. See ensure_window_on_screen.
+            if let Some(window) = app.get_webview_window("main") {
+                ensure_window_on_screen(&window);
+            }
+
             app.on_menu_event(|app, event| {
                 match event.id().as_ref() {
                     "open-file" => {
@@ -87,18 +133,9 @@ fn main() {
                             .strip_prefix("theme-")
                             .unwrap_or("system");
                         // Update the radio-group checkmarks: check the selected
-                        // item, uncheck the other two. The items live in View → Theme,
-                        // so we use the recursive helper instead of menu.get().
+                        // item, uncheck the other two (shared with sync_theme_menu).
                         if let Some(menu) = app.menu() {
-                            for (id, checked) in [
-                                ("theme-system", chosen == "system"),
-                                ("theme-light",  chosen == "light"),
-                                ("theme-dark",   chosen == "dark"),
-                            ] {
-                                if let Some(item) = commands::find_check_item(&menu, id) {
-                                    let _ = item.set_checked(checked);
-                                }
-                            }
+                            let _ = commands::set_theme_checkmarks(&menu, chosen);
                         }
                         let _ = app.emit("theme-set", chosen);
                     }
@@ -300,4 +337,71 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    // --- path_from_deep_link ---------------------------------------------
+
+    #[test]
+    fn deep_link_extracts_path_from_canonical_three_slash_form() {
+        assert_eq!(
+            path_from_deep_link("markdownviewer:///Users/me/doc.md"),
+            Some("/Users/me/doc.md"),
+        );
+    }
+
+    #[test]
+    fn deep_link_rejects_non_empty_authority() {
+        // markdownviewer://hostname/path — only two slashes between scheme and
+        // first path segment means "hostname" is parsed as authority, not path.
+        assert_eq!(path_from_deep_link("markdownviewer://evil/path.md"), None);
+    }
+
+    #[test]
+    fn deep_link_rejects_wrong_scheme() {
+        assert_eq!(path_from_deep_link("file:///etc/passwd"), None);
+        assert_eq!(path_from_deep_link("http://example.com/x.md"), None);
+    }
+
+    #[test]
+    fn deep_link_rejects_garbage() {
+        assert_eq!(path_from_deep_link(""), None);
+        assert_eq!(path_from_deep_link("markdownviewer:"), None);
+        assert_eq!(path_from_deep_link("markdownviewer://"), None);
+    }
+
+    // --- safe_markdown_path -----------------------------------------------
+
+    #[test]
+    fn safe_path_returns_canonical_string_for_valid_md_file() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("a.md");
+        fs::write(&f, "x").unwrap();
+        let result = safe_markdown_path(f.to_str().unwrap()).unwrap();
+        assert_eq!(result, fs::canonicalize(&f).unwrap().to_string_lossy());
+    }
+
+    #[test]
+    fn safe_path_returns_none_for_non_markdown() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("a.txt");
+        fs::write(&f, "x").unwrap();
+        assert!(safe_markdown_path(f.to_str().unwrap()).is_none());
+    }
+
+    #[test]
+    fn safe_path_returns_none_for_missing_file() {
+        assert!(safe_markdown_path("/does/not/exist/x.md").is_none());
+    }
+
+    #[test]
+    fn safe_path_returns_none_for_directory() {
+        let dir = tempdir().unwrap();
+        assert!(safe_markdown_path(dir.path().to_str().unwrap()).is_none());
+    }
 }

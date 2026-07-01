@@ -52,7 +52,7 @@ MACOS   = platform.system() == "Darwin"
 ROOT = Path(__file__).resolve().parent
 APP  = ROOT / "app"
 
-MIN_NODE_MAJOR = 18
+MIN_NODE_MAJOR = 22
 MIN_PNPM_MAJOR = 9
 PINNED_PNPM_VERSION = "11.1.2"
 MIN_RUST_MINOR = 77  # 1.77
@@ -279,7 +279,7 @@ def main() -> int:
             return 1
 
     if not has_node:
-        fail("Node.js not found — please install Node.js 18+ from https://nodejs.org")
+        fail("Node.js not found — please install Node.js 22+ from https://nodejs.org")
         return 1
 
     if not has_pnpm:

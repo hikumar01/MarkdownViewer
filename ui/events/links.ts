@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import { resolveWithinBase } from '../renderer/resolvePath'
+import { resolveMdHref } from '../renderer/resolvePath'
 
 let tooltip: HTMLDivElement | null = null
 let hoverTimer: number | null = null
@@ -42,15 +42,20 @@ function isMdLink(href: string): boolean {
   return /\.(md|markdown)(\?[^#]*)?(#.*)?$/i.test(href)
 }
 
-// Resolve a relative href against basePath. Returns null on traversal escapes.
-// Mirrors the resolveLocalPath logic in pipeline.ts: any resolved path that
-// does not stay within basePath is rejected — preventing .md link navigation
-// from reaching files outside the open document's directory tree.
-// Resolve a relative .md href against basePath, dropping any query/fragment
-// before delegating to the shared traversal-safe resolver.
-function resolveMdPath(href: string): string | null {
-  const hrefPath = (href.split('?')[0] ?? '').split('#')[0] ?? ''
-  return resolveWithinBase(basePath, hrefPath)
+// Finds the element an in-page fragment (`#foo`) targets. rehype-sanitize
+// rewrites heading `id`s with a `user-content-` clobber-prefix (e.g. a heading
+// slugged `foo` renders as id="user-content-foo"), but author-written link
+// hrefs keep the bare `#foo`. So a raw `#foo` lookup misses every generated
+// heading anchor. Try the literal id first (covers ids from raw HTML), then
+// fall back to the prefixed form.
+function findAnchorTarget(container: HTMLElement, id: string): Element | null {
+  if (!id) return null
+  const escaped = CSS.escape(id)
+  return (
+    container.querySelector(`#${escaped}`) ??
+    container.querySelector(`#${CSS.escape(`user-content-${id}`)}`) ??
+    container.querySelector(`[name="${escaped}"]`)
+  )
 }
 
 export function attachLinkHandlers(
@@ -62,24 +67,31 @@ export function attachLinkHandlers(
     if (!anchor) return
     const href = anchor.getAttribute('href') ?? ''
 
+    // Every anchor inside rendered content is handled here. Default the click
+    // to prevented so a link we don't explicitly route (relative non-md paths,
+    // absolute paths, mailto:/tel:/ftp:, etc.) can never navigate the WebView
+    // away from index.html and tear down the running app. Each branch below
+    // then performs the intended in-app action.
+    e.preventDefault()
+
     if (href.startsWith('#')) {
-      e.preventDefault()
-      const id = href.slice(1)
-      container.querySelector(`#${CSS.escape(id)}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      findAnchorTarget(container, href.slice(1))?.scrollIntoView({ behavior: 'smooth', block: 'start' })
       return
     }
 
     if (isMdLink(href)) {
-      e.preventDefault()
-      const resolved = resolveMdPath(href)
+      const resolved = resolveMdHref(basePath, href)
       if (resolved) onMdNavigate(resolved)
       return
     }
 
     if (isExternal(href)) {
-      e.preventDefault()
       invoke('open_url', { url: href }).catch(console.error)
+      return
     }
+
+    // Anything else is intentionally inert: preventing default (above) protects
+    // the app shell; no in-app action applies to unsupported link targets.
   })
 
   container.addEventListener('mouseover', (e) => {

@@ -73,7 +73,7 @@ flowchart TB
 - The frontend has no direct filesystem access — all reads go through `read_file` / `watch_file` Tauri commands
 - Every path received from the frontend is re-validated in Rust before use (`canonical_markdown_path`)
 - The WebView's CSP prevents arbitrary script execution, remote fetches, and image/font beacons
-- The unified processor is frozen at module load — rendering is stateless and safe to call from any event handler
+- The unified processor is frozen (one per enabled-bundle set, cached) — rendering is stateless and runs in a Web Worker off the UI thread, with a synchronous fallback
 
 ---
 
@@ -81,18 +81,26 @@ flowchart TB
 
 | Path | Contents |
 |---|---|
-| `ui/main.ts` | App bootstrap, event listeners, history stack, `loadFile` |
-| `ui/renderer/pipeline.ts` | Frozen unified processor, all rehype plugins |
-| `ui/renderer/mermaid.ts` | Mermaid init, render, theme re-render, SVG sanitizer |
+| `ui/main.ts` | App bootstrap, event listeners, history stack, `loadFile`, debounced auto-reload + scroll preservation |
+| `ui/settings.ts` | Typed façade over `localStorage` — the single source of truth for every persisted key (theme, TOC, recents, restore paths, enabled bundles) with validation + defaults |
+| `ui/debounce.ts` | Generic trailing-edge `debounce(fn, ms)` with a `cancel()` handle |
+| `ui/renderer/renderClient.ts` | Main-thread render entry point — dispatches to the worker and awaits the result; falls back to synchronous rendering when workers are unavailable |
+| `ui/renderer/renderWorker.ts` | Dedicated Web Worker that runs the unified pipeline off the UI thread |
+| `ui/renderer/pipeline.ts` | Bundle-aware unified processor builder + per-enabled-set frozen-processor cache, all rehype plugins |
+| `ui/renderer/bundles.ts` | Plugin-bundle registry (R1–R4 slots) + `collectBundlePlugins`; the toggle scaffolding |
+| `ui/renderer/resolvePath.ts` | Traversal-safe `resolveWithinBase` plus the shared `resolveImageSrc` (image `src`) and `resolveMdHref` (link target) derivatives |
+| `ui/renderer/mermaid.ts` | Mermaid init, render, theme re-render |
+| `ui/renderer/svgSanitize.ts` | Dependency-free sanitizer for Mermaid's `securityLevel:'loose'` SVG output (element/attribute/scheme stripping) |
 | `ui/renderer/sanitize.ts` | `sanitizeOptions` extending `rehypeSanitize` defaultSchema |
+| `ui/renderer/purify.ts` | `sanitizeHtml` — final DOMPurify pass; allow-lists the `markdownviewer://` image scheme |
 | `ui/renderer/codeBlocks.ts` | Copy-to-clipboard buttons attached to Shiki code blocks after each render |
-| `ui/events/theme.ts` | Theme detection, preference persistence, OS change listener |
-| `ui/events/links.ts` | Click delegation — anchor scroll, external open, MD navigation |
+| `ui/events/theme.ts` | Theme detection + OS change listener; persistence delegated to `settings.ts` |
+| `ui/events/links.ts` | Click delegation — in-page anchor scroll, external open, MD navigation; default-prevents every content link so the shell can never be navigated away |
 | `ui/events/drag.ts` | Native drag-drop overlay and file-open handler |
-| `ui/events/toc.ts` | TOC panel — build from DOM headings, IntersectionObserver scroll-spy, class-based toggle, persistence |
+| `ui/events/toc.ts` | TOC panel — build from DOM headings, IntersectionObserver scroll-spy, class-based toggle; visibility persisted via `settings.ts` |
 | `ui/events/search.ts` | In-document search — mark.js integration, match navigation, overlay open/close |
-| `ui/events/recent.ts` | Recent files — localStorage read/write, native submenu sync via `sync_recent_menu` |
-| `ui/events/storage.ts` | Best-effort localStorage wrapper shared by theme, TOC, recents, and restore state |
+| `ui/events/recent.ts` | Recent files — MRU/dedup/trim domain logic + native submenu sync via `sync_recent_menu`; persistence delegated to `settings.ts` |
+| `ui/events/storage.ts` | Best-effort low-level `localStorage` wrapper; only `settings.ts` consumes it directly |
 | `ui/styles/app.css` | App chrome, image states, Mermaid states, drag overlay, TOC panel, search bar, link tooltip |
 | `app/src/main.rs` | Tauri app setup, menu construction, event routing |
 | `app/src/commands.rs` | All `#[tauri::command]` handlers |
@@ -133,12 +141,14 @@ The current app deliberately keeps the frontend permission surface small. File r
 |---|---|---|
 | `tauri` | App shell, WebView, custom commands, menus | Core runtime only; custom protocol enabled by the `custom-protocol` feature |
 | `tauri-plugin-dialog` | Confirm/message dialogs in the frontend; file picker from Rust | The frontend can call confirm/message only; `open_file_dialog` opens the picker from Rust |
-| `tauri-plugin-window-state` | Window bounds persistence | Restores and saves window size/position |
+| `tauri-plugin-window-state` | Window bounds persistence | Restores and saves window size/position; `ensure_window_on_screen` (main.rs) clamps the restored rect back on-screen — see below |
 | `tauri-plugin-single-instance` | Additional CLI opens | Forwards a file path to the running app and focuses the window |
 | `tauri-plugin-deep-link` | `markdownviewer:///path` URLs | Routes incoming URLs through Rust validation before emitting `open-file` |
 | `notify` | Live reload | Uses platform-native file events |
 | `open` | External browser launch | Wrapped by `open_url`, which allows only credential-free `http(s)` URLs |
 | `mime_guess` / `urlencoding` | `markdownviewer://` protocol | Decode local image paths and return MIME types safely |
+
+**Off-screen window guard.** `tauri-plugin-window-state` has a long-standing macOS bug where it reads `outer_position()` (which includes an invisible title-bar offset) and re-applies that offset on restore, so the saved window rect drifts downward on each launch and — in packaged builds specifically — can be restored below the visible screen (disconnecting a monitor between launches produces the same "restored off-screen" symptom on any platform). Because a modal error/confirm dialog paints itself centered on the display, the mispositioned main window is easy to miss until the dialog is dismissed. `ensure_window_on_screen` (in `main.rs`, called from `setup` after the plugin has restored state) validates the window rect against its monitor — falling back to the primary monitor when the window is so far off-screen it reports none — and clamps it fully back into bounds. A window that is already on-screen is left untouched, so normal position memory still works; a single launch heals a bad saved position.
 
 ### Capability File
 
@@ -521,6 +531,19 @@ Bundles are coarser than individual features but finer than "all extensions on/o
 - New markdown extensions must be assigned to an existing bundle or justify a new one
 - Per-feature toggles within a bundle are ruled out; dynamic plugin injection without a pipeline rebuild is ruled out
 
+#### Implementation status
+
+The **scaffolding is landed** (`ui/renderer/bundles.ts`): the R1–R4 slots, the enabled-set persistence (`settings.getEnabledBundles` / `setEnabledBundles`, key `bundles`), the `collectBundlePlugins` collector, and the processor-rebuild path (`buildProcessor` + a per-enabled-set frozen-processor cache in `pipeline.ts`) all exist and are tested. Each bundle currently contributes **empty** `remarkPlugins` / `rehypePlugins` lists, so toggling a bundle is a no-op on rendered output until real plugins are wired in.
+
+Adding a bundle's plugins later is a single-registry edit with no plumbing changes:
+
+1. `pnpm add` the remark/rehype plugin(s).
+2. Populate the bundle's `remarkPlugins` / `rehypePlugins` factory in `bundles.ts`.
+3. If the plugin emits new elements/attributes, extend `sanitizeOptions` (`sanitize.ts`) — bundle rehype plugins run **before** `rehypeSanitize`, so their output is still sanitized.
+4. Add per-bundle feature tests.
+
+Enabled bundles are read on the main thread (`settings.getEnabledBundles`) and passed into the render worker per request — the worker has no access to `localStorage`.
+
 ---
 
 ### Product Scope (v1)
@@ -595,7 +618,7 @@ A policy is needed so developers know what to implement, what to skip, and how t
 2. **Platform enhancements are additions, not replacements.** An enhancement improves the native experience on one platform but the feature works without it.
 3. **Platform-specific Rust code uses `#[cfg(target_os)]` and is clearly separated from cross-platform logic.** A `#[cfg(target_os = "macos")]` block must not contain logic the cross-platform path depends on.
 4. **Platform enhancements are documented with a `> Platform Enhancement (macOS/Windows):` callout**, making it easy to identify what is optional vs. required during implementation.
-5. **CI runs on both macOS and Windows.** Cross-platform path always tested; platform enhancement paths tested only on their respective platforms.
+5. **The test suites must pass on both shipped targets (macOS and Windows).** The TypeScript type-check, Vitest suite, and production build are platform-independent; `cargo clippy -D warnings` and `cargo test` should be run on each target (both use the OS-native WebView and need no extra system packages). There is **no CI pipeline today** — this is enforced manually before release, so a platform regression is only caught if the suites are actually run on that platform. Platform enhancement paths are tested only on their respective platforms.
 
 **In practice:**
 
@@ -620,7 +643,7 @@ Quick Look does not violate this rule because it is explicitly macOS-exclusive w
 
 - Shipped user-visible features have cross-platform implementations unless explicitly documented as platform-specific enhancements
 - Platform enhancement code in the Rust backend is always in `#[cfg]` blocks that compile to no-ops on other platforms
-- CI must include Windows runners before broadening baseline platform behavior
+- The Rust suite must be run on both macOS and Windows before broadening baseline platform behavior; there is no CI matrix today, so if one is added it should extend (not replace) this cross-platform coverage
 - macOS-only implementations of baseline viewer features without a Windows equivalent are ruled out
 
 ---
@@ -734,7 +757,17 @@ flowchart LR
 - `rehypeResolveImages` rewrites renderer-approved relative `src` values to `markdownviewer://` before `rehypeSanitize`, which must allowlist that scheme in `protocols.src`
 - `rehypeSlug` runs before `rehypeSanitize` so generated `id` attributes survive — they're allow-listed on `h1`–`h6` only
 - `rehypeSanitize` runs before `rehypeShiki` — Shiki's `style=` output on `<span>/<pre>` is intentionally in the schema; it is not stripped post-hoc
-- The processor is built once and `processor.freeze()`'d at module load — repeated renders are allocation-free in the plugin chain; per-render state (`basePath`) is threaded through `VFile.data`
+- Bundle remark plugins (if any) are inserted after `remarkGfm`; bundle rehype plugins after `rehypeSlug` and before `rehypeSanitize`, so anything a bundle emits is still sanitized (see [Plugin Bundle Architecture](#plugin-bundle-architecture))
+- A processor is built and `processor.freeze()`'d **per enabled-bundle set** and cached (`pipeline.ts`) — repeated renders are allocation-free in the plugin chain; toggling bundles builds (and caches) a new frozen processor rather than mutating one. Per-render state (`basePath`) is threaded through `VFile.data`
+
+**Threading — off the UI thread:**
+
+The pipeline is CPU-heavy (unified traversal + Shiki's WASM highlighter), so it runs in a dedicated **Web Worker** (`renderWorker.ts`) rather than on the UI thread. `main.ts` never imports `pipeline.ts` directly — it calls `renderClient.renderMarkdown(content, basePath)`, which:
+
+- reads the enabled bundles from `settings` (the worker can't touch `localStorage`) and posts `{ id, content, basePath, bundles }` to the worker, correlating the reply by `id`;
+- **falls back to synchronous, in-thread rendering** when `Worker` is undefined (e.g. a test runner) or the worker fails to construct / errors at runtime. Rendering is therefore always correct; the worker is a performance optimization, not a correctness dependency.
+
+Because the worker is emitted as a same-origin module chunk (`/assets/renderWorker-*.js`), the CSP `worker-src` allow-list includes `'self'` (alongside `blob:` for Mermaid's internal workers).
 
 **Plugin-level notes:**
 
@@ -762,12 +795,12 @@ flowchart LR
 
 Mermaid v11 renders node labels as `<foreignObject><div><span>` inside SVG. DOMPurify's namespace validation strips HTML-namespace children (div, span, p) that are children of SVG-namespace `<foreignObject>` regardless of `ADD_TAGS` or `ADD_ATTR` — leaving every node box empty.
 
-The custom sanitizer in `mermaid.ts`:
+The custom sanitizer in `svgSanitize.ts` (`sanitizeSvgFragment`):
 
-1. Parses via `div.innerHTML` — this triggers correct HTML5 content-mode switching inside `<foreignObject>`, matching browser behavior
-2. Removes all `<script>` elements in place
-3. Strips `on*` event-handler attributes, `javascript:` URL values, and non-image `data:` URI values (`data:image/...` is allowed; `data:text/html,...` is not)
-4. Transfers nodes into a `DocumentFragment` without re-serializing — avoiding WebKit's additional `innerHTML` round-trip bug
+1. Parses via `new DOMParser().parseFromString(svg, 'text/html')` — an **inert** document (scripts never execute, no `<img>`/resource loads fire) that still uses the same HTML5 fragment-parsing algorithm as `innerHTML`, so `<foreignObject>` content-mode switching matches browser rendering. This deliberately avoids the `element.innerHTML = untrusted` sink (CodeQL "DOM text reinterpreted as HTML") that reassigning Mermaid output to a live element would introduce.
+2. Removes all `<script>/<iframe>/<object>/<embed>` elements in place
+3. Strips `on*` event-handler attributes, `javascript:`/`vbscript:` URL values, and non-image `data:` URI values (`data:image/...` is allowed; `data:text/html,...` is not)
+4. Imports the sanitized nodes into the live document (`document.importNode`) and returns them as a `DocumentFragment` without re-serializing
 
 `securityLevel: 'loose'` is required so Mermaid outputs inline SVG (the alternative wraps it in an iframe, breaking CSS theming). The custom sanitizer compensates for the reduced Mermaid-internal security.
 
@@ -800,21 +833,28 @@ Relative image `src` values in markdown are rewritten to `markdownviewer://{reso
 
 Deep links arrive as `markdownviewer:///path/to/file.md` (3 slashes = empty authority). The `path_from_deep_link` function in `main.rs` rejects any URL where the path after `markdownviewer://` does not begin with `/`, preventing hostname injection (`markdownviewer://hostname/path`).
 
-### MD link navigation
+### Link navigation
 
-Relative `.md` link clicks resolve through `resolveMdPath` in `links.ts`, which includes the same `startsWith(basePath)` guard as the image resolver. This prevents navigating to arbitrary `.md` files via crafted links like `../../etc/passwd.md`.
+All anchor clicks inside rendered content are handled by a single delegated listener in `links.ts` that **calls `preventDefault()` first, then decides what to do**. Defaulting to prevented is a hard requirement: a link the app does not explicitly route (a relative non-`.md` path, an absolute path, or a `mailto:`/`tel:`/`ftp:` scheme) would otherwise trigger the WebView's native navigation and replace `index.html`, tearing down the running single-page app. After prevention the listener routes exactly three cases:
+
+- **In-page anchors (`#fragment`)** scroll to the target heading. Because `rehype-sanitize` rewrites heading `id`s with its `user-content-` clobber-prefix (a heading slugged `details` renders as `id="user-content-details"`) while author-written hrefs keep the bare `#details`, the lookup tries the literal id, then the `user-content-`-prefixed id, then a matching `[name]`. Without this bridge every generated heading anchor would silently fail to scroll.
+- **Relative `.md` links** resolve through `resolveMdHref` (`resolvePath.ts`), which shares the exact same traversal-safe `resolveWithinBase` core as the image resolver — preventing navigation to arbitrary `.md` files via crafted links like `../../etc/passwd.md`.
+- **External `http(s)` links** are opened in the system browser via the `open_url` command.
+
+Every other href is inert: the click is swallowed and no action is taken.
 
 ### Sanitization layers (defense-in-depth)
 
 1. **`rehypeSanitize`** — removes dangerous HTML from the remark/rehype AST before stringification (configured in `sanitize.ts`; uses HAST property names — `className`, not `class`)
-2. **DOMPurify** — final pass after `innerHTML` injection in `main.ts`, catching edge cases from `rehype-raw` or plugin interaction
-3. **Custom SVG sanitizer** — post-Mermaid DOM pass: removes `<script>`, `on*` attributes, `javascript:` and non-image `data:` URIs
+2. **DOMPurify** — final pass after `innerHTML` injection in `main.ts`, via `sanitizeHtml` (`purify.ts`), catching edge cases from `rehype-raw` or plugin interaction. Its `ALLOWED_URI_REGEXP` is the DOMPurify default **plus** the `markdownviewer` scheme: DOMPurify's default URI allow-list rejects unknown schemes, which would otherwise strip the `markdownviewer://` `src` on every local image (turning `<img src="markdownviewer://…">` into a src-less `<img>`). All other DOMPurify protections — including blocking `javascript:` and every other unknown scheme — are unchanged. Allowing the scheme here is safe because the Rust protocol handler canonicalizes the path and enforces an image-only extension allow-list before serving any bytes.
+3. **Custom SVG sanitizer** (`svgSanitize.ts`, `sanitizeSvgFragment`) — the sole sanitizer for Mermaid output (Mermaid runs `securityLevel:'loose'` and its SVG bypasses the DOMPurify HTML pass). It removes `<script>/<iframe>/<object>/<embed>` elements, strips `on*` handler attributes, and drops any attribute whose value resolves to a dangerous scheme (`javascript:`/`vbscript:`/non-image `data:`). The scheme test first strips C0 control chars, tabs, newlines, and whitespace, because browsers ignore those when resolving a URL scheme (`java\tscript:` and `\x01javascript:` both execute as `javascript:`) — so a crafted diagram label cannot smuggle a scheme past a naive prefix check.
 4. **Rust `canonical_markdown_path`** — re-validates every path from the frontend; the Rust backend never trusts the WebView
+5. **File-size cap** — `read_file` rejects any file over 50 MB (checked via `metadata()` before reading) so a pathological or accidentally-selected huge/binary `.md` cannot exhaust memory or freeze the UI when marshalled across IPC
 
 ### CSP and capabilities
 
 The WebView's Content Security Policy (set in `tauri.conf.json`) prevents:
-- `eval` and arbitrary inline scripts; the FOUC-prevention theme script is allowed by an exact SHA-256 hash
+- JavaScript `eval`/`new Function` and arbitrary inline scripts; the FOUC-prevention theme script is allowed by an exact SHA-256 hash. `script-src` includes `'wasm-unsafe-eval'` — the minimal directive required to compile the WebAssembly that Shiki's syntax highlighter (oniguruma) relies on. This permits **WebAssembly compilation only**; it does **not** re-enable JavaScript `eval`, so the anti-arbitrary-JS guarantee holds. Without it, the production WebView throws `CompileError: Refused to create a WebAssembly object …` and rendering fails (dev builds mask this because Tauri injects a permissive dev CSP with `unsafe-eval` for HMR).
 - External XHR/fetch/WebSocket connections from rendered markdown
 - Remote image/font beacons (`img-src` is limited to `self`, `markdownviewer:`, `data:`, and `blob:`; `font-src` is limited to `self` and `data:`)
 - `object` and `embed` elements
@@ -827,9 +867,18 @@ The following invariants are enforced at every Rust boundary command and apply t
 
 - **Generic error messages** — never propagate raw `io::Error` strings (or any error containing absolute paths or OS-specific text) back to the frontend. The frontend gets a stable, user-safe message; debug detail stays in `eprintln!`/logs only.
 - **Outbound URL strings are filtered before reaching the OS launcher.** `open_url` rejects URLs longer than 2048 chars, any URL containing ASCII control characters or whitespace, any scheme other than `http(s)`, and credentialed authorities such as `https://user@example.com`. This blocks CRLF / argument-injection vectors and deceptive credential-injection URLs before they reach legacy registered URL handlers.
-- **Path resolution always rejects the `basePath`-empty case** in both `resolveLocalPath` (image src) and `resolveMdPath` (link target). With no anchor directory, traversal would otherwise resolve at filesystem root.
+- **Path resolution always rejects the `basePath`-empty case.** Both the image-src resolver (`resolveImageSrc`) and the link-target resolver (`resolveMdHref`) delegate to the single `resolveWithinBase` core in `resolvePath.ts`, which rejects an empty base — with no anchor directory, traversal would otherwise resolve at filesystem root.
 - **Embedded NUL is rejected** in any frontend-supplied path before the OS sees it (decoded path containing `\0` short-circuits to a rejection). Some platforms otherwise truncate paths at the first NUL, defeating extension checks.
 - **State commits only after successful read.** `loadFile` no longer mutates `state.filePath`, navigation history, or Recent Files until `read_file` has returned content. A failed open cannot leave the app pointing at a non-existent file or push a phantom entry into history.
+
+### Dependency advisories
+
+Triage of scanner/Dependabot alerts. Version floors are pinned in `package.json` so a fresh `pnpm install` cannot resolve back to a vulnerable release.
+
+- **DOMPurify (npm)** — bumped to `^3.4.11`. The reported advisories all concern `IN_PLACE` mode, `setConfig()`/`clearConfig()`, custom hooks, Trusted Types, and `SAFE_FOR_TEMPLATES` — none of which this app uses (`sanitizeHtml` calls `DOMPurify.sanitize(html, { ALLOWED_URI_REGEXP })`: string in, string out, default mode). Upgraded anyway to clear the alerts and stay current.
+- **vite / launch-editor (npm, dev-only)** — vite bumped to `^8.1.2`, which resolves the `server.fs.deny` bypass and drops the vulnerable transitive `launch-editor`. Both are dev-server dependencies only; the shipped Tauri bundle contains no vite runtime.
+- **glib `VariantStrIter` unsoundness (Rust)** — **not applicable to shipped builds.** `glib` is a Linux-only transitive dependency (`tauri → gtk/tao/muda → glib`); `cargo tree -i glib` returns nothing for the macOS/Windows targets this project builds and ships, so the affected code is never compiled or linked. The fix lands in `glib 0.20+`, which is gated behind the gtk-rs `0.18` stack that Tauri pins — it cannot be bumped independently and will be picked up with a future Tauri upgrade.
+- **Mermaid SVG "DOM text reinterpreted as HTML" (CodeQL, `svgSanitize.ts`)** — resolved by parsing untrusted Mermaid output with `DOMParser.parseFromString(svg, 'text/html')` (an inert document) instead of assigning it to a live element's `innerHTML`; see [Mermaid Rendering](#mermaid-rendering).
 
 ---
 
@@ -890,6 +939,13 @@ The `notify` crate provides FSEvents on macOS (zero polling latency, kernel-leve
 
 Only one watcher is kept alive at a time in a `Mutex<Option<RecommendedWatcher>>` in `WatcherState`. Replacing it by storing a new watcher automatically drops (and stops) the previous one. The Mutex uses `unwrap_or_else(|p| p.into_inner())` for poison recovery rather than `.unwrap()`.
 
+### Debounced reload and scroll preservation
+
+The Rust watcher is deliberately "dumb" — it emits one `file-changed` event per filesystem event. Coalescing and scroll handling live on the frontend, next to the render:
+
+- **Debounced re-render.** `file-changed` is routed through a 300ms trailing-edge `debounce` (`ui/debounce.ts`, `RELOAD_DEBOUNCE_MS` in `main.ts`), so a burst of events during an atomic save (or a rapid sequence of saves) coalesces into a single `reloadCurrentFile` call with no blank intermediate states. Closing a file cancels any pending reload via the debounce handle's `cancel()`. Keeping the debounce in the frontend (rather than a Rust-side channel debounce) puts the coalescing next to the render and makes it trivially unit-testable (`ui/__tests__/debounce.test.ts`). A Rust-side debounce remains a possible future optimization to also suppress redundant IPC traffic, but is not required for no-flicker behavior.
+- **Scroll preservation.** `reloadCurrentFile` captures `#content.scrollTop` before the reload and restores it — clamped to the new `scrollHeight` — after the fresh render (including Mermaid) settles. Only the auto-reload path restores scroll: manual file opens still start at the top, and anchor clicks continue to use `scrollIntoView`. If the document shrinks below the previous offset, scroll clamps to the new bottom. A heading-anchor approach (find the visible heading before reload, scroll to it after) remains a possible follow-up for very large documents.
+
 ---
 
 ## Theme System
@@ -926,7 +982,7 @@ The history stack is an in-memory `string[]` in `main.ts`. Every new file open (
 
 The Go menu's Back/Forward items are enabled/disabled from the frontend via `sync_nav_menu` after each state change. In Tauri v2, `AppHandle::menu().get(id)` searches only root-level menu children (the top-level submenus). `nav-back` and `nav-forward` live inside the Go submenu — `sync_nav_menu` must iterate `menu.items()` → each `Submenu::items()` explicitly.
 
-Relative MD links are resolved using `resolveMdPath` in `ui/events/links.ts`. The function normalizes `..` segments then checks `result.startsWith(base)` to reject traversal outside the open file's directory tree. This mirrors the `resolveLocalPath` guard in `pipeline.ts` — both must be kept in sync if the path resolution logic changes.
+Relative MD links are resolved using `resolveMdHref` in `ui/renderer/resolvePath.ts` (called from `links.ts`). It strips any `?query`/`#fragment`, then delegates to the shared `resolveWithinBase`, which normalizes `..` segments and checks `result.startsWith(base)` to reject traversal outside the open file's directory tree. The image-src resolver (`resolveImageSrc`) delegates to the **same** `resolveWithinBase` core, so link and image resolution can no longer drift apart — there is a single implementation to change, not two to keep in sync.
 
 ---
 

@@ -1,4 +1,5 @@
 import mermaid from 'mermaid'
+import { sanitizeSvgFragment } from './svgSanitize'
 
 // Running counter for unique mermaid render IDs within a session. A simple
 // counter is used rather than a content hash because Mermaid's cache is reset
@@ -18,41 +19,25 @@ export function initMermaid(theme: 'default' | 'dark'): void {
   })
 }
 
-// WHY a custom DOM sanitizer instead of DOMPurify:
-// Mermaid v11 renders node labels as <foreignObject><div><span><p> inside the
-// SVG. DOMPurify's namespace validation removes HTML-namespace elements
-// (div/span/p) that are children of SVG-namespace foreignObject, regardless of
-// ADD_TAGS or ADD_ATTR options — this leaves every node box empty. A DOM-based
-// walk avoids all namespace-check stripping: we parse once via innerHTML (which
-// correctly switches to HTML-content mode inside foreignObject per the HTML5
-// spec), then remove only the actual threats in-place before appending.
-function sanitizeSvgFragment(svgString: string): DocumentFragment {
-  const tmp = document.createElement('div')
-  tmp.innerHTML = svgString
+// WHY a custom DOM sanitizer (sanitizeSvgFragment, svgSanitize.ts) instead of
+// DOMPurify: Mermaid v11 renders node labels as <foreignObject><div><span><p>
+// inside the SVG. DOMPurify's namespace validation removes HTML-namespace
+// elements (div/span/p) that are children of SVG-namespace foreignObject,
+// regardless of ADD_TAGS or ADD_ATTR options — this leaves every node box empty.
+// A DOM-based walk avoids all namespace-check stripping: it parses once via
+// innerHTML (which correctly switches to HTML-content mode inside foreignObject
+// per the HTML5 spec), then removes only the actual threats in-place.
 
-  // Remove script elements entirely.
-  for (const el of Array.from(tmp.querySelectorAll('script'))) el.remove()
-
-  // Strip event-handler attributes (on*), javascript: URLs, and data: URIs
-  // that could execute script. Mermaid v11 (securityLevel:'loose') renders
-  // node labels as HTML inside foreignObject — a crafted label could inject
-  // <a href="data:text/html,..."> that survives without this check.
-  const DANGEROUS_URL = /^(?:javascript:|data:(?!image\/))/i
-  for (const el of Array.from(tmp.querySelectorAll('*'))) {
-    for (const attr of Array.from(el.attributes)) {
-      const val = attr.value.trimStart()
-      if (
-        /^on\w/i.test(attr.name) ||
-        DANGEROUS_URL.test(val)
-      ) {
-        el.removeAttribute(attr.name)
-      }
-    }
-  }
-
-  const frag = document.createDocumentFragment()
-  while (tmp.firstChild) frag.appendChild(tmp.firstChild)
-  return frag
+// Renders one mermaid `source` to a sanitized DocumentFragment using a fresh
+// unique id (so Mermaid never serves a stale cached SVG). Returns null when the
+// fragment is empty after sanitization — e.g. a diagram whose only content was
+// stripped. Throws on a Mermaid parse/render failure; callers decide how to
+// present that. Shared by renderMermaidBlocks and rerenderMermaidTheme.
+async function renderToFragment(source: string): Promise<DocumentFragment | null> {
+  const id = `mermaid-${diagramCounter++}`
+  const { svg } = await mermaid.render(id, source)
+  const fragment = sanitizeSvgFragment(svg)
+  return fragment.firstChild ? fragment : null
 }
 
 // Re-renders every already-rendered mermaid figure in `container` using the
@@ -65,16 +50,9 @@ export async function rerenderMermaidTheme(container: HTMLElement): Promise<void
   )
 
   for (const figure of figures) {
-    const source = figure.dataset.mermaidSrc ?? ''
-    const id = `mermaid-${diagramCounter++}`
-
     try {
-      const { svg } = await mermaid.render(id, source)
-      const cleanFragment = sanitizeSvgFragment(svg)
-
-      if (!cleanFragment.firstChild) continue
-
-      figure.replaceChildren(cleanFragment)
+      const fragment = await renderToFragment(figure.dataset.mermaidSrc ?? '')
+      if (fragment) figure.replaceChildren(fragment)
     } catch {
       // Leave the existing diagram in place rather than replacing with an
       // error on a theme change — the diagram was valid when first rendered.
@@ -89,17 +67,15 @@ export async function renderMermaidBlocks(container: HTMLElement): Promise<void>
 
   if (blocks.length === 0) return
 
-  // The incrementing diagramCounter guarantees a unique ID for every render
-  // call, so Mermaid never serves a stale cached SVG for a new render pass.
-  // mermaidAPI.reset() (a private internal API) is intentionally NOT called —
-  // unique IDs make it redundant, and private APIs can break across versions.
+  // renderToFragment's incrementing diagramCounter guarantees a unique ID for
+  // every render call, so Mermaid never serves a stale cached SVG for a new
+  // render pass. mermaidAPI.reset() (a private internal API) is intentionally
+  // NOT called — unique IDs make it redundant, and private APIs can break
+  // across versions. The 'mermaid-' id prefix also prevents collision with
+  // heading anchor ids from remark-rehype.
 
   for (const pre of blocks) {
     const source = pre.querySelector('code')?.textContent ?? ''
-
-    // WHY 'mermaid-' prefix: prevents collision with heading anchor id values
-    // generated by remark-rehype (see architecture.md#diagram-renderer-mermaidjs).
-    const id = `mermaid-${diagramCounter++}`
 
     if (!source.trim()) {
       const empty = document.createElement('figure')
@@ -109,11 +85,9 @@ export async function renderMermaidBlocks(container: HTMLElement): Promise<void>
     }
 
     try {
-      const { svg } = await mermaid.render(id, source)
+      const cleanFragment = await renderToFragment(source)
 
-      const cleanFragment = sanitizeSvgFragment(svg)
-
-      if (!cleanFragment.firstChild) {
+      if (!cleanFragment) {
         throw new Error('SVG was empty after sanitization — diagram may use unsupported elements')
       }
 

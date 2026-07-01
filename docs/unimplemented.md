@@ -6,64 +6,17 @@ This file tracks features that are not yet implemented, open design questions, a
 
 ## Table of Contents
 
-1. [Debounced Re-render](#debounced-rerender)
-2. [Scroll Position Preservation](#scroll-preservation)
-3. [Image Captions](#image-captions)
-4. [Image Sizing](#image-sizing)
-5. [Status Bar](#status-bar)
-6. [Security Regression Tests](#security-regression-tests)
-7. [Backlog Overview](#backlog-overview)
-8. [Planned Keyboard Shortcuts](#planned-keyboard-shortcuts)
-9. [Open Points](#open-points)
-10. [Deferred Scope](#deferred-scope)
-11. [macOS Proxy Icon](#macos-proxy-icon)
+1. [Image Captions](#image-captions)
+2. [Image Sizing](#image-sizing)
+3. [Status Bar](#status-bar)
+4. [Security Regression Tests](#security-regression-tests)
+5. [Backlog Overview](#backlog-overview)
+6. [Planned Keyboard Shortcuts](#planned-keyboard-shortcuts)
+7. [Open Points](#open-points)
+8. [Deferred Scope](#deferred-scope)
+9. [macOS Proxy Icon](#macos-proxy-icon)
 
----
-
-## Debounced Re-render
-
-Rapid file saves (e.g., auto-save while typing) do not cause visible flickering — re-renders are batched with a 300ms trailing-edge debounce.
-
-**Acceptance criteria:** re-render fires at most once per 300ms window; the last change always triggers a render; no blank intermediate states.
-
-**How to implement**
-
-Debounce in the Rust backend before emitting the Tauri event:
-
-```rust
-let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
-tokio::spawn(async move {
-    while rx.recv().await.is_some() {
-        while let Ok(_) = rx.try_recv() {}   // drain burst
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        let _ = window.emit("file-changed", &path_clone);
-    }
-});
-// In the notify watcher callback:
-let _ = tx.try_send(());
-```
-
-Replace the direct `window.emit` calls in `commands.rs` `watch_file` with `tx.try_send(())`. The channel has capacity 1, so backpressure is automatic — rapid saves coalesce to a single render.
-
----
-
-## Scroll Position Preservation
-
-When the document re-renders due to a file change, the view stays within one viewport height of the previous scroll position rather than snapping to the top.
-
-**Acceptance criteria:** scroll position preserved on reload; if document shrinks below previous offset, scroll to bottom; first load always starts at top; anchor clicks are unaffected.
-
-**How to implement**
-
-```typescript
-// In reloadCurrentFile, before calling loadFile:
-const scrollY = window.scrollY
-
-// In loadFile, after renderMermaidBlocks (new content stable in DOM):
-window.scrollTo({ top: Math.min(scrollY, document.body.scrollHeight), behavior: 'instant' })
-```
-
-Pass `scrollY` through the call chain or store it on a module-level variable set only during auto-reload. Manual file opens always scroll to top. A heading-anchor approach (find the visible heading before reload, scroll to it after) is more robust for large documents but is a follow-up enhancement.
+> Live-reload debouncing and scroll-position preservation were previously tracked here and are now **implemented** — see [architecture.md → File Watching](architecture.md#file-watching) and [product-summary.md → Live Reload](product-summary.md#live-reload).
 
 ---
 
@@ -191,7 +144,7 @@ Set a 60-second `setInterval` to refresh the relative timestamp display without 
 
 The current implementation has the important runtime safeguards in place, but automated coverage should make those invariants harder to regress.
 
-**Acceptance criteria:** tests or harness checks cover the renderer and Rust boundary cases below; failures are visible in CI before release.
+**Acceptance criteria:** tests or harness checks cover the renderer and Rust boundary cases below; failures surface in the local test run (`pnpm test` / `cargo test`) before release.
 
 | Area | Cases to cover |
 |---|---|
@@ -217,7 +170,7 @@ Features not yet started, ordered by priority.
 | Copy Diagram as SVG / PNG | Right-click context menu; PNG at 2× density; SVG with inlined styles; uses `ClipboardItem` + canvas rasterization + `@tauri-apps/plugin-dialog` for saves |
 | Click-to-expand Diagram | Full-screen lightbox overlay with zoom/pan; Escape or click-outside closes; fades in 150ms; respects `prefers-reduced-motion`; depends on Diagram Zoom |
 | Incremental Re-render | Content-hash block IDs; only changed DOM blocks replaced on file-change; falls back to full re-render if structure shifts |
-| Large File Handling | Web Worker for rendering pipeline; progressive Mermaid via IntersectionObserver; up to 5 MB; loading indicator after 500ms; prose-only above 5 MB |
+| Large File Handling | Open work only (the off-main-thread render worker itself is already shipped — see architecture.md → Rendering Pipeline): progressive Mermaid via IntersectionObserver, a 5 MB cap, a loading indicator after 500ms, and prose-only mode above 5 MB |
 | Emoji Shortcodes | `:emoji_name:` → Unicode via `remark-emoji` with `accessible: true`; ~1 900 GitHub emoji; unrecognized codes left as plain text; excluded from code blocks |
 
 **Open design question:** A unified error/loading state component spec is needed before implementation — six patterns are referenced across these features: Toast, Inline error block, Placeholder, Spinner/skeleton, Progress indicator.
@@ -294,10 +247,10 @@ Cross-cutting design questions that require a decision before the relevant featu
 | OP-06 | Code block line numbers — in or out of scope? | Release |
 | OP-07 | Wide table scroll behavior — overflow-x or constrained? | Release |
 | OP-08 | Accessibility requirements (VoiceOver, keyboard nav, reduced motion, high contrast) | Release |
-| OP-09 | Link edge cases — mailto:, tel:, broken relative file link behaviour | Release |
+| OP-09 | Link edge cases — `mailto:`/`tel:` routing (currently inert). Broken/unsupported relative links are already handled: every content-link click is default-prevented so it can never navigate the app shell away (see architecture.md → Link navigation) | Release |
 | OP-10 | Code block filename/title annotation — strip or render? | Release |
 | OP-11 | File reload visual indicator — silent, flash, or toast? | Live reload |
-| OP-13 | Settings / Preferences panel UI spec | Any persisted setting |
+| OP-13 | Settings / Preferences panel UI spec. The persistence layer already exists — `ui/settings.ts` is the typed, validated single source of truth for every persisted key (theme, TOC, recents, restore paths, enabled plugin bundles). Only the panel *UI* is unspecified; wiring a control to an existing setting is a one-line `settings` call | Any persisted setting |
 | OP-15 | Performance budget — formal targets and automated benchmark setup | Release |
 | OP-16 | Diagram SVG accessibility — role, title, aria attributes | Diagram Zoom |
 | OP-17 | Error and loading state design — which of the six patterns applies where | Power Viewer features |

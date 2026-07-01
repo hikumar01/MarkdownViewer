@@ -85,3 +85,52 @@ fn not_found() -> Response<Vec<u8>> {
         .body(Vec::new())
         .unwrap()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn p(s: &str) -> PathBuf { PathBuf::from(s) }
+
+    #[test]
+    fn allows_lowercase_image_extensions() {
+        for ext in IMAGE_EXTENSIONS {
+            assert!(is_allowed_extension(&p(&format!("a.{ext}"))), "ext {ext}");
+        }
+    }
+
+    #[test]
+    fn allows_uppercase_image_extensions() {
+        assert!(is_allowed_extension(&p("img.PNG")));
+        assert!(is_allowed_extension(&p("photo.JPEG")));
+        assert!(is_allowed_extension(&p("icon.SVG")));
+    }
+
+    #[test]
+    fn rejects_non_image_extensions() {
+        assert!(!is_allowed_extension(&p("doc.pdf")));
+        assert!(!is_allowed_extension(&p("script.sh")));
+        assert!(!is_allowed_extension(&p("page.html")));
+        assert!(!is_allowed_extension(&p("note.md")));
+        assert!(!is_allowed_extension(&p("a.exe")));
+    }
+
+    #[test]
+    fn rejects_extensionless_paths() {
+        assert!(!is_allowed_extension(&p("README")));
+        assert!(!is_allowed_extension(&p("/etc/passwd")));
+        assert!(!is_allowed_extension(&p("/tmp/anonymous")));
+    }
+
+    #[test]
+    fn rejects_double_extension_where_last_is_non_image() {
+        assert!(!is_allowed_extension(&p("trap.png.exe")));
+    }
+
+    #[test]
+    fn accepts_double_extension_where_last_is_image() {
+        assert!(is_allowed_extension(&p("photo.backup.png")));
+    }
+}
+

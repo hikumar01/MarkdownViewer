@@ -5,20 +5,22 @@
   "type": "module",
   "packageManager": "pnpm@11.1.2",
   "engines": {
-    "node": ">=18"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "dev": "tauri dev --config app/tauri.conf.json",
     "dev:frontend": "vite",
     "build": "vite build",
     "bundle": "tauri build --config app/tauri.conf.json",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@shikijs/rehype": "^4.0.2",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.7.1",
-    "dompurify": "^3.4.3",
+    "dompurify": "^3.4.11",
     "github-markdown-css": "^5",
     "mark.js": "^8.11.1",
     "mermaid": "^11",
@@ -36,7 +38,10 @@
     "@tauri-apps/cli": "^2",
     "@types/hast": "^3.0.4",
     "@types/mark.js": "^8.11.12",
+    "happy-dom": "^20.10.6",
+    "jsdom": "^29.1.1",
     "typescript": "^6.0.3",
-    "vite": "^8.0.13"
+    "vite": "^8.1.2",
+    "vitest": "^4.1.8"
   }
 }

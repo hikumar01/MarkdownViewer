@@ -58,9 +58,24 @@ pub(crate) fn canonical_markdown_path(path: &str) -> Result<std::path::PathBuf, 
     Ok(canonical)
 }
 
+/// Upper bound on a markdown file we will read into memory. A viewer never needs
+/// gigabyte inputs; without a cap, a pathological (or accidentally selected huge
+/// or binary) `.md` file would be read fully into a String and marshalled across
+/// IPC, freezing the UI or exhausting memory. 50 MB is far above any realistic
+/// prose document while still bounding worst-case allocation.
+const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
+
 #[tauri::command]
 pub fn read_file(path: String) -> Result<String, String> {
     let canonical = canonical_markdown_path(&path)?;
+    // Reject oversized files before allocating: metadata() is cheap and avoids
+    // reading the bytes at all when the file is too large.
+    let len = std::fs::metadata(&canonical)
+        .map_err(|_| "Failed to read file".to_string())?
+        .len();
+    if len > MAX_FILE_BYTES {
+        return Err("File is too large to open (50 MB limit)".to_string());
+    }
     // Generic error: the underlying io::Error message can include the absolute
     // canonical path and OS-specific text (permission denied, fs corruption,
     // etc.). The frontend only needs to know the read failed; leaking the
@@ -142,26 +157,33 @@ pub fn unwatch_file(state: tauri::State<'_, WatcherState>) -> Result<(), String>
     Ok(())
 }
 
-#[tauri::command]
-pub fn sync_nav_menu(app: tauri::AppHandle, can_back: bool, can_forward: bool) -> Result<(), String> {
-    let Some(menu) = app.menu() else { return Ok(()) };
-    // menu.get() searches only the root menu's direct children (the top-level
-    // submenus like File, Edit, Go…). nav-back/forward live one level deeper
-    // inside the Go submenu, so we iterate all submenus and their children.
+/// Sets the enabled state of plain `MenuItem`s (not checkboxes/submenus) whose id
+/// matches one in `states`. `menu.get()` only searches the root menu's direct
+/// children (the top-level submenus like File, Edit, Go…); the items we toggle
+/// live one level deeper, so we walk each submenu's children. Shared by
+/// `sync_nav_menu` and `sync_doc_menu`, which differ only in the id/flag pairs.
+fn set_items_enabled<R: tauri::Runtime>(
+    menu: &tauri::menu::Menu<R>,
+    states: &[(&str, bool)],
+) -> Result<(), String> {
     let Ok(top_items) = menu.items() else { return Ok(()) };
     for top in top_items {
         let MenuItemKind::Submenu(sub) = top else { continue };
         let Ok(children) = sub.items() else { continue };
         for child in children {
             let MenuItemKind::MenuItem(mi) = child else { continue };
-            match mi.id().as_ref() {
-                "nav-back"    => { mi.set_enabled(can_back).map_err(|e| e.to_string())?; }
-                "nav-forward" => { mi.set_enabled(can_forward).map_err(|e| e.to_string())?; }
-                _ => {}
+            if let Some(&(_, enabled)) = states.iter().find(|(id, _)| *id == mi.id().as_ref()) {
+                mi.set_enabled(enabled).map_err(|e| e.to_string())?;
             }
         }
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn sync_nav_menu(app: tauri::AppHandle, can_back: bool, can_forward: bool) -> Result<(), String> {
+    let Some(menu) = app.menu() else { return Ok(()) };
+    set_items_enabled(&menu, &[("nav-back", can_back), ("nav-forward", can_forward)])
 }
 
 #[tauri::command]
@@ -328,20 +350,8 @@ fn shorten_path(path: &str) -> String {
 #[tauri::command]
 pub fn sync_doc_menu(app: tauri::AppHandle, has_file: bool) -> Result<(), String> {
     let Some(menu) = app.menu() else { return Ok(()) };
-    // close-file lives in File and find-in-doc in Edit; menu.get() only searches
-    // the root menu's direct children, so we walk submenus (same pattern as sync_nav_menu).
-    let Ok(top_items) = menu.items() else { return Ok(()) };
-    for top in top_items {
-        let MenuItemKind::Submenu(sub) = top else { continue };
-        let Ok(children) = sub.items() else { continue };
-        for child in children {
-            let MenuItemKind::MenuItem(mi) = child else { continue };
-            if matches!(mi.id().as_ref(), "close-file" | "find-in-doc") {
-                mi.set_enabled(has_file).map_err(|e| e.to_string())?;
-            }
-        }
-    }
-    Ok(())
+    // close-file lives in File and find-in-doc in Edit — both one level deep.
+    set_items_enabled(&menu, &[("close-file", has_file), ("find-in-doc", has_file)])
 }
 
 /// Opens the native file-open dialog, optionally starting in `start_dir`.
@@ -390,20 +400,175 @@ pub async fn open_file_dialog(
         .unwrap_or(None)
 }
 
+/// Updates the View → Theme radio-group checkmarks so exactly `selected`
+/// (one of "system" / "light" / "dark") is checked. Shared by the
+/// `sync_theme_menu` command (startup sync from localStorage) and the menu-event
+/// handler in main.rs (user picks a theme), which previously duplicated this loop.
+pub(crate) fn set_theme_checkmarks<R: tauri::Runtime>(
+    menu: &tauri::menu::Menu<R>,
+    selected: &str,
+) -> Result<(), String> {
+    for (id, checked) in [
+        ("theme-system", selected == "system"),
+        ("theme-light",  selected == "light"),
+        ("theme-dark",   selected == "dark"),
+    ] {
+        if let Some(item) = find_check_item(menu, id) {
+            item.set_checked(checked).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 /// Syncs the View → Theme menu checkmarks with the preference stored in the
 /// frontend's localStorage. Called once on startup so the menu reflects the
 /// persisted choice rather than always defaulting to "System".
 #[tauri::command]
 pub fn sync_theme_menu(app: tauri::AppHandle, preference: String) -> Result<(), String> {
     let Some(menu) = app.menu() else { return Ok(()) };
-    for (id, checked) in [
-        ("theme-system", preference == "system"),
-        ("theme-light",  preference == "light"),
-        ("theme-dark",   preference == "dark"),
-    ] {
-        if let Some(item) = find_check_item(&menu, id) {
-            item.set_checked(checked).map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
+    set_theme_checkmarks(&menu, &preference)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    // --- canonical_markdown_path -------------------------------------------
+
+    #[test]
+    fn accepts_md_file() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("a.md");
+        fs::write(&f, "# hi").unwrap();
+        let result = canonical_markdown_path(f.to_str().unwrap()).unwrap();
+        assert!(result.is_file());
+        assert_eq!(result.extension().unwrap(), "md");
+    }
+
+    #[test]
+    fn accepts_markdown_extension() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("a.markdown");
+        fs::write(&f, "# hi").unwrap();
+        assert!(canonical_markdown_path(f.to_str().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn accepts_uppercase_extension() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("README.MD");
+        fs::write(&f, "# hi").unwrap();
+        assert!(canonical_markdown_path(f.to_str().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn rejects_non_markdown_extension() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("a.txt");
+        fs::write(&f, "x").unwrap();
+        let err = canonical_markdown_path(f.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("markdown"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn rejects_extensionless_file() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("README");
+        fs::write(&f, "x").unwrap();
+        assert!(canonical_markdown_path(f.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn rejects_directory_with_markdown_name() {
+        let dir = tempdir().unwrap();
+        let sub = dir.path().join("notes.md");
+        fs::create_dir(&sub).unwrap();
+        let err = canonical_markdown_path(sub.to_str().unwrap()).unwrap_err();
+        assert!(err == "Not a file" || err.contains("Not a file"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn rejects_missing_file() {
+        let err = canonical_markdown_path("/definitely/does/not/exist/x.md").unwrap_err();
+        assert!(err.contains("not found") || err.contains("File"), "unexpected error: {err}");
+    }
+
+    // --- read_file --------------------------------------------------------
+
+    #[test]
+    fn read_file_reads_a_small_markdown_file() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("ok.md");
+        fs::write(&f, "# hi").unwrap();
+        assert_eq!(read_file(f.to_str().unwrap().to_string()).unwrap(), "# hi");
+    }
+
+    #[test]
+    fn read_file_rejects_files_over_the_size_cap() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("big.md");
+        // set_len creates a sparse file: metadata().len() reports MAX+1 without
+        // actually writing 50 MB, so read_file rejects it before reading a byte.
+        let handle = fs::File::create(&f).unwrap();
+        handle.set_len(MAX_FILE_BYTES + 1).unwrap();
+        let err = read_file(f.to_str().unwrap().to_string()).unwrap_err();
+        assert!(err.contains("too large"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn resolves_dot_segments_via_canonicalize() {
+        // canonicalize() collapses ".." segments at the OS level, so a path
+        // that includes traversal but lands on a real file resolves cleanly.
+        let dir = tempdir().unwrap();
+        let inner = dir.path().join("inner");
+        fs::create_dir(&inner).unwrap();
+        let f = dir.path().join("a.md");
+        fs::write(&f, "x").unwrap();
+
+        let traversal = inner.join("../a.md");
+        let canonical = canonical_markdown_path(traversal.to_str().unwrap()).unwrap();
+        assert_eq!(canonical, fs::canonicalize(&f).unwrap());
+    }
+
+    // --- shorten_path ------------------------------------------------------
+
+    fn with_env<T>(key: &str, value: &str, f: impl FnOnce() -> T) -> T {
+        let prev = std::env::var_os(key);
+        // SAFETY: Test process is single-threaded for the duration of this
+        // mutation; only this test module uses set_var.
+        unsafe { std::env::set_var(key, value); }
+        let result = f();
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn shorten_path_replaces_home_prefix_with_tilde() {
+        with_env("HOME", "/Users/alice", || {
+            assert_eq!(shorten_path("/Users/alice/docs"), "~/docs");
+        });
+    }
+
+    #[test]
+    fn shorten_path_leaves_non_home_paths_alone() {
+        with_env("HOME", "/Users/alice", || {
+            assert_eq!(shorten_path("/etc/nginx"), "/etc/nginx");
+            assert_eq!(shorten_path("/Users/bob/docs"), "/Users/bob/docs");
+        });
+    }
+
+    #[test]
+    fn shorten_path_handles_home_exactly() {
+        with_env("HOME", "/Users/alice", || {
+            assert_eq!(shorten_path("/Users/alice"), "~");
+        });
+    }
+}
+

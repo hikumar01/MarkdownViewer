@@ -4,9 +4,7 @@ interface TocEntry {
   level: number
 }
 
-import { getStorageItem, setStorageItem } from './storage'
-
-const STORAGE_KEY = 'toc'
+import { getTocVisible, setTocVisible } from '../settings'
 
 let observer: IntersectionObserver | null = null
 let activeId: string | null = null
@@ -23,7 +21,7 @@ function getPanel(): HTMLElement {
 }
 
 export function isTocVisible(): boolean {
-  return getStorageItem(STORAGE_KEY) !== 'closed'
+  return getTocVisible()
 }
 
 function applyVisibility(panel: HTMLElement, visible: boolean): void {
@@ -33,7 +31,7 @@ function applyVisibility(panel: HTMLElement, visible: boolean): void {
 
 export function toggleToc(): boolean {
   const next = !isTocVisible()
-  setStorageItem(STORAGE_KEY, next ? 'open' : 'closed')
+  setTocVisible(next)
   applyVisibility(getPanel(), next)
   return next
 }

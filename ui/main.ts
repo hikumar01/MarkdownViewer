@@ -2,11 +2,11 @@
 // theme.ts via <link> elements that toggle on the active theme.
 import './styles/app.css'
 
-import DOMPurify from 'dompurify'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { message as dialogMessage, confirm as dialogConfirm } from '@tauri-apps/plugin-dialog'
-import { renderMarkdown } from './renderer/pipeline'
+import { renderMarkdown } from './renderer/renderClient'
+import { sanitizeHtml } from './renderer/purify'
 import { initMermaid, renderMermaidBlocks, rerenderMermaidTheme } from './renderer/mermaid'
 import { detectTheme, applyThemePreference, getThemePreference } from './events/theme'
 import type { Theme, ThemePreference } from './events/theme'
@@ -16,7 +16,12 @@ import { initToc, updateToc, clearToc, toggleToc, isTocVisible } from './events/
 import { initSearch, updateSearchContent, clearSearch, openSearch } from './events/search'
 import { addToRecent, removeFromRecent, clearRecent, syncRecentMenu, getRecent } from './events/recent'
 import { attachCopyButtons } from './renderer/codeBlocks'
-import { getStorageItem, removeStorageItem, setStorageItem } from './events/storage'
+import { getLastFile, setLastFile, clearLastFile, getLastOpenDir, setLastOpenDir } from './settings'
+import { debounce } from './debounce'
+
+// Auto-reload is debounced so a burst of file-change events (e.g. an editor
+// auto-saving on every keystroke) coalesces into a single re-render.
+const RELOAD_DEBOUNCE_MS = 300
 
 interface AppState {
   filePath: string | null
@@ -44,22 +49,27 @@ function syncNavMenu(): void {
   }).catch(console.error)
 }
 
+// Loads a file without recording it in the navigation history. Used by
+// Back/Forward (the entry already exists) and auto-reload (not a navigation).
+// The flag is reset in `finally` so a failed load never leaves it stuck on.
+async function loadWithoutHistory(path: string): Promise<void> {
+  navigatingHistory = true
+  try { await loadFile(path) }
+  finally { navigatingHistory = false }
+}
+
 async function goBack(): Promise<void> {
   if (historyIndex <= 0) return
   historyIndex--
-  navigatingHistory = true
   // historyIndex in-bounds is guaranteed by the guard above
-  try { await loadFile(historyStack[historyIndex]!) }
-  finally { navigatingHistory = false }
+  await loadWithoutHistory(historyStack[historyIndex]!)
   syncNavMenu()
 }
 
 async function goForward(): Promise<void> {
   if (historyIndex >= historyStack.length - 1) return
   historyIndex++
-  navigatingHistory = true
-  try { await loadFile(historyStack[historyIndex]!) }
-  finally { navigatingHistory = false }
+  await loadWithoutHistory(historyStack[historyIndex]!)
   syncNavMenu()
 }
 
@@ -121,7 +131,8 @@ async function loadFile(path: string): Promise<boolean> {
     const contentEl = document.getElementById('content')!
     // Final DOMPurify pass as defense-in-depth: rehypeSanitize already cleaned
     // the HTML, but this catches any edge case from rehype-raw or plugin bugs.
-    contentEl.innerHTML = DOMPurify.sanitize(html)
+    // sanitizeHtml keeps the markdownviewer:// image scheme (see purify.ts).
+    contentEl.innerHTML = sanitizeHtml(html)
     attachImageHandlers(contentEl)
     contentEl.removeAttribute('hidden')
 
@@ -137,8 +148,8 @@ async function loadFile(path: string): Promise<boolean> {
 
     await invoke('set_window_title', { filename: normalPath.split('/').pop()! })
     syncRecentMenu(path)
-    setStorageItem('lastOpenFilePath', path)
-    setStorageItem('lastFilePath', path)
+    setLastOpenDir(path)
+    setLastFile(path)
     invoke('sync_doc_menu', { hasFile: true }).catch(console.error)
     return true
   } catch (err) {
@@ -166,14 +177,23 @@ async function loadFile(path: string): Promise<boolean> {
 
 async function reloadCurrentFile(): Promise<void> {
   if (!state.filePath) return
+  // Preserve the reader's place: capture the scroll offset before the reload
+  // blows away #content, then restore it (clamped to the new height) once the
+  // fresh render — including Mermaid — has settled.
+  const before = document.getElementById('content')?.scrollTop ?? 0
   // Auto-reload is not a navigation — skip pushing to history.
-  navigatingHistory = true
-  try { await loadFile(state.filePath) }
-  finally { navigatingHistory = false }
+  await loadWithoutHistory(state.filePath)
+  const contentEl = document.getElementById('content')
+  if (contentEl) contentEl.scrollTop = Math.min(before, contentEl.scrollHeight)
 }
+
+// Trailing-edge debounced auto-reload (see RELOAD_DEBOUNCE_MS).
+const scheduleReload = debounce(() => { reloadCurrentFile().catch(console.error) }, RELOAD_DEBOUNCE_MS)
 
 function showWelcome(): void {
   invoke('unwatch_file').catch(console.error)
+  // Drop any queued auto-reload so it can't fire against a closed document.
+  scheduleReload.cancel()
 
   state.filePath = null
 
@@ -193,7 +213,7 @@ function showWelcome(): void {
 
   invoke('set_window_title', { filename: '' })
   invoke('sync_doc_menu', { hasFile: false }).catch(console.error)
-  removeStorageItem('lastFilePath')
+  clearLastFile()
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
@@ -244,7 +264,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   // first file open doesn't pay the cold-start cost.
   renderMarkdown('`_`', '').catch(() => {})
 
-  await listen<string>('file-changed', () => reloadCurrentFile())
+  await listen<string>('file-changed', () => scheduleReload())
 
   await listen<string>('file-deleted', async ({ payload }) => {
     showWelcome()
@@ -276,7 +296,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   // File → Open File… — dialog is opened here so we can pass the current
   // file's directory (or the last successfully opened directory) as the start.
   await listen('menu-open-file', async () => {
-    const startDir = state.filePath ?? getStorageItem('lastOpenFilePath') ?? null
+    const startDir = state.filePath ?? getLastOpenDir() ?? null
     const picked = await invoke<string | null>('open_file_dialog', { startDir })
     if (picked) await loadFile(picked)
   })
@@ -292,7 +312,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   if (pendingPath) {
     loadFile(pendingPath).catch(console.error)
   } else {
-    const lastPath = getStorageItem('lastFilePath')
-    if (lastPath) loadFile(lastPath).catch(() => removeStorageItem('lastFilePath'))
+    const lastPath = getLastFile()
+    if (lastPath) loadFile(lastPath).catch(() => clearLastFile())
   }
 })
