@@ -3,7 +3,7 @@ dist
 .DS_Store
 .claude/
 
-# Build artifacts — target/ is redirected to project root via .cargo/config.toml
+# Build artifacts — Cargo builds into app/target; this pattern matches it at any depth.
 target
 app/gen
 

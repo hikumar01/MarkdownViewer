@@ -10,6 +10,22 @@ fn icons_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("icons")
 }
 
+/// True if `dest` needs (re)generating: missing, or older than `icon.svg`.
+/// Lets the generators skip work — and stay silent — on incremental builds
+/// where the source SVG hasn't changed.
+fn is_stale(dest: &Path) -> bool {
+    let src = icons_dir().join("icon.svg");
+    let (Ok(dest_meta), Ok(src_meta)) = (std::fs::metadata(dest), std::fs::metadata(&src)) else {
+        // dest missing (regenerate); if the SVG is missing, let the render path
+        // below surface the clearer "icon.svg is required" panic.
+        return true;
+    };
+    match (dest_meta.modified(), src_meta.modified()) {
+        (Ok(dest_time), Ok(src_time)) => dest_time < src_time,
+        _ => true,
+    }
+}
+
 /// Render `icons/icon.svg` at `size`×`size` and return raw RGBA bytes.
 fn render_rgba(size: u32) -> Vec<u8> {
     use resvg::{tiny_skia, usvg};
@@ -31,7 +47,8 @@ fn render_rgba(size: u32) -> Vec<u8> {
 }
 
 /// Generate all icon formats needed by `tauri.conf.json` from `icon.svg`.
-/// Only missing files are (re)generated, so incremental builds are fast.
+/// Each output is (re)generated only when missing or older than `icon.svg`
+/// (see `is_stale`), so unchanged incremental builds do no work and stay quiet.
 fn generate_icons() {
     gen_icns();
     gen_ico();
@@ -42,6 +59,7 @@ fn generate_icons() {
 
 fn gen_icns() {
     let dest = icons_dir().join("icon.icns");
+    if !is_stale(&dest) { return; }
 
     use icns::{IconFamily, IconType, Image, PixelFormat};
 
@@ -70,13 +88,13 @@ fn gen_icns() {
 
     let file = std::fs::File::create(&dest).expect("failed to create icon.icns");
     family.write(file).expect("failed to write icon.icns");
-    println!("cargo:warning=Generated {}", dest.display());
 }
 
 // ── Windows: .ico ─────────────────────────────────────────────────────────────
 
 fn gen_ico() {
     let dest = icons_dir().join("icon.ico");
+    if !is_stale(&dest) { return; }
 
     let mut dir = ico::IconDir::new(ico::ResourceType::Icon);
 
@@ -90,7 +108,6 @@ fn gen_ico() {
 
     let file = std::fs::File::create(&dest).expect("failed to create icon.ico");
     dir.write(file).expect("failed to write icon.ico");
-    println!("cargo:warning=Generated {}", dest.display());
 }
 
 // ── Linux / generic: plain PNGs ──────────────────────────────────────────────
@@ -101,6 +118,7 @@ fn gen_pngs() {
     // 128x128@2x is 256 physical pixels stored under the @2x name convention.
     for (size, name) in [(32u32, "32x32.png"), (128, "128x128.png"), (256, "128x128@2x.png")] {
         let dest = dir.join(name);
+        if !is_stale(&dest) { continue; }
         // tiny_skia's Pixmap writes PNG natively — no extra image crate needed.
         let rgba = render_rgba(size);
         let pixmap = resvg::tiny_skia::Pixmap::from_vec(
@@ -110,6 +128,5 @@ fn gen_pngs() {
         .expect("failed to reconstruct pixmap for PNG");
         pixmap.save_png(&dest)
             .unwrap_or_else(|e| panic!("failed to save {name}: {e}"));
-        println!("cargo:warning=Generated {}", dest.display());
     }
 }

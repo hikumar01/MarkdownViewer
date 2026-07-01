@@ -31,8 +31,8 @@ The feature set described in [docs/product-summary.md](docs/product-summary.md) 
 | Tool | Min version | Install |
 |------|-------------|---------|
 | Rust + Cargo | 1.77 | https://rustup.rs |
-| Node.js | 18 | https://nodejs.org |
-| pnpm | 9+ (repo pinned to 11.1.2) | `corepack enable` or `npm install -g pnpm` |
+| Node.js | 22.13 | https://nodejs.org |
+| pnpm | 11.1.2 (pinned via `packageManager`; needs Node ≥ 22.13) | `corepack enable` or `npm install -g pnpm` |
 | Python | 3.8 | https://python.org (for `setup.py` only) |
 
 **macOS**: Xcode Command Line Tools required (`xcode-select --install`).  
@@ -70,6 +70,33 @@ To run the frontend in isolation (no Tauri/Rust):
 pnpm dev:frontend
 ```
 
+## Testing
+
+The repo has two independent test suites: TypeScript (Vitest + happy-dom) for the UI layer and Rust (`cargo test`) for the Tauri backend.
+
+```bash
+# TypeScript: all unit tests (renderer pipeline, link/drag handlers,
+# storage, theme, recent files, TOC, path-traversal guard)
+pnpm test
+
+# TypeScript: watch mode
+pnpm test:watch
+
+# Rust: protocol handler, command validators, deep-link parsing
+cd app && cargo test
+```
+
+There is no CI pipeline; run the checks locally before pushing. The full gate is the TypeScript type-check, Vitest, and a production build, plus `cargo clippy` (treat warnings as errors) and `cargo test`:
+
+```bash
+pnpm exec tsc --noEmit && pnpm test && pnpm build
+cd app && cargo clippy --all-targets -- -D warnings && cargo test
+```
+
+Test layout:
+- TypeScript tests live in [ui/__tests__/](ui/__tests__/) (one `*.test.ts` per source file). Tauri APIs (`@tauri-apps/api/core`, `event`, `plugin-dialog`) are stubbed via aliases in [vitest.config.ts](vitest.config.ts) so tests never need a running Tauri runtime. Node 25's incomplete built-in `localStorage` is replaced with a spec-compliant in-memory `Storage` by [ui/__tests__/setup.ts](ui/__tests__/setup.ts). Most tests run under happy-dom; `purify.test.ts` is pinned to `jsdom` (via a `@vitest-environment jsdom` docblock) because happy-dom does not faithfully implement the DOM parsing/serialization APIs DOMPurify relies on.
+- Rust tests live alongside source as `#[cfg(test)] mod tests` blocks in [app/src/protocol.rs](app/src/protocol.rs), [app/src/commands.rs](app/src/commands.rs), and [app/src/main.rs](app/src/main.rs). `tempfile` is used as a dev-dependency for filesystem fixtures.
+
 ## Building
 
 ```bash
@@ -103,15 +130,19 @@ All major technology decisions and their full rationale are in [`docs/architectu
 
 ## Security Posture
 
-Markdown Viewer is safe to use with untrusted Markdown files as a local viewer: markdown content is sanitized before DOM insertion, Mermaid SVG output gets a second sanitizer, file paths are canonicalized in Rust, and the frontend has no direct filesystem or shell plugin permissions. The CSP allows only self-hosted scripts plus the exact hashed theme bootstrap, blocks remote image/font beacons, and permits local images only through the custom protocol.
+Markdown Viewer is safe to use with untrusted Markdown files as a local viewer: markdown content is sanitized before DOM insertion, Mermaid SVG output gets a second sanitizer, file paths are canonicalized in Rust, and the frontend has no direct filesystem or shell plugin permissions. The CSP allows only self-hosted scripts plus the exact hashed theme bootstrap (and `'wasm-unsafe-eval'`, needed solely to compile Shiki's WebAssembly highlighter — JavaScript `eval` stays blocked), blocks remote image/font beacons, and permits local images only through the custom protocol.
 
 ## LocalStorage Keys
 
-The app uses these browser localStorage keys:
+All persisted state goes through `ui/settings.ts`, a typed façade that validates
+every read and is the single place these keys are named:
 
-- `theme`
-- `recent`
-- `toc`
+- `theme` — theme preference (`system` / `light` / `dark`)
+- `recent` — JSON array of recently opened file paths (max 10)
+- `toc` — Table of Contents visibility (`open` / `closed`)
+- `lastFilePath` — the file to restore automatically on the next launch
+- `lastOpenFilePath` — the last successfully opened path, used as the Open File… dialog's starting directory
+- `bundles` — JSON array of enabled markdown plugin-bundle ids (see [architecture.md → Plugin Bundle Architecture](docs/architecture.md#plugin-bundle-architecture)); absent means the built-in default set
 
 On macOS, these values are persisted by WKWebView under:
 
@@ -128,7 +159,3 @@ Both lock files are committed and should stay committed:
 | `app/Cargo.lock` | Pins exact Rust crate versions |
 
 Never delete these before a build. Run `pnpm install` (not `pnpm install --frozen-lockfile`) and `cargo update` deliberately when you want to upgrade dependencies.
-
-## License
-
-MIT

@@ -83,11 +83,11 @@ Markdown Viewer renders the complete CommonMark spec plus every GFM extension:
 
 Dangerous elements — `<script>`, `on*` event handlers, `javascript:` and non-image `data:` URIs — are always stripped regardless of the source file. There is no "trust this file" mode.
 
-> **For engineers:** The pipeline uses the `unified` / `remark` / `rehype` ecosystem. The processor is built once and frozen with `processor.freeze()` at module load — repeated renders are allocation-free in the plugin chain. Per-render state (the file's `basePath`) is threaded through `VFile.data` rather than plugin options, so the frozen processor stays safely reusable.
+> **For engineers:** The pipeline uses the `unified` / `remark` / `rehype` ecosystem and runs in a **Web Worker** (`renderWorker.ts`) so a large document never blocks the UI thread; `renderClient.ts` dispatches to it and falls back to synchronous rendering if no `Worker` is available. A processor is built and frozen with `processor.freeze()` **per enabled plugin-bundle set** and cached — repeated renders are allocation-free in the plugin chain, and toggling bundles builds a fresh frozen processor rather than mutating one. Per-render state (the file's `basePath`) is threaded through `VFile.data` rather than plugin options, so the frozen processor stays safely reusable.
 >
 > Pipeline order: `remarkParse` → `remarkGfm` → `remarkRehype` (`allowDangerousHtml`) → `rehypeRaw` → `rehypeExtractMermaid` → `rehypeResolveImages` → `rehypeSlug` → `rehypeSanitize` → `rehypeShiki` → `rehypeStringify`.
 >
-> A final `DOMPurify` pass runs after `innerHTML` injection as defense-in-depth — `rehypeSanitize` already cleaned the AST, but this catches any edge case from `rehype-raw` or future plugin interaction.
+> A final `DOMPurify` pass (`sanitizeHtml` in `purify.ts`) runs after `innerHTML` injection as defense-in-depth — `rehypeSanitize` already cleaned the AST, but this catches any edge case from `rehype-raw` or future plugin interaction. Its URI allow-list is the DOMPurify default plus the `markdownviewer` scheme, so local images survive the pass; without this the default config strips unknown schemes and every local image renders src-less.
 >
 > See [Markdown Parser decision](./architecture.md#markdown-parser-remarkunified) for why `remark` was chosen over `markdown-it` (structural delimiter disambiguation, source positions).
 
@@ -103,7 +103,7 @@ All Mermaid v11 diagram types render as inline SVG directly in the document. Dia
 
 > **For engineers:** Mermaid blocks are extracted from the rehype AST **before** Shiki runs (by `rehypeExtractMermaid`). Shiki skips `pre.mermaid-source` by class — preventing a double-processing conflict. Mermaid renders **after** the HTML is in the DOM so it can measure containers and produce correctly sized SVGs.
 >
-> SVG output is sanitized with a custom DOM-based sanitizer — not DOMPurify. DOMPurify's namespace validation strips HTML-namespace children (`div`, `span`, `p`) out of SVG-namespace `<foreignObject>`, which is exactly how Mermaid v11 renders node labels. The custom sanitizer parses via `div.innerHTML` (correct HTML5 content-mode switching), removes `<script>` elements and `on*` / `javascript:` / non-image `data:` URI attributes in-place, and transfers nodes into a `DocumentFragment` without re-serializing.
+> SVG output is sanitized with a custom DOM-based sanitizer (`svgSanitize.ts`) — not DOMPurify. DOMPurify's namespace validation strips HTML-namespace children (`div`, `span`, `p`) out of SVG-namespace `<foreignObject>`, which is exactly how Mermaid v11 renders node labels. The custom sanitizer parses via `DOMParser.parseFromString(svg, 'text/html')` — an inert document that never executes scripts or fires resource loads while keeping the same HTML5 content-mode switching as `innerHTML` (and avoiding the `innerHTML` DOM-XSS sink) — removes `<script>/<iframe>/<object>/<embed>` elements and `on*` / `javascript:` / `vbscript:` / non-image `data:` URI attributes in-place, then imports the nodes into a `DocumentFragment` without re-serializing.
 >
 > `securityLevel: 'loose'` is required for inline SVG (vs iframe). The post-render sanitizer compensates for the reduced Mermaid-internal security.
 >
@@ -183,6 +183,8 @@ The rendered view updates automatically within milliseconds of the file being sa
 > **For engineers:** File watching uses the `notify` crate — FSEvents on macOS (kernel-level, zero polling latency), ReadDirectoryChangesW on Windows. Atomic saves (the write-then-rename pattern used by VS Code, Vim `writebackup`, JetBrains IDEs) produce a `Modify(Name(_))` event. The handler checks `Path::is_file()` on the watched path to distinguish "renamed over" (new content → `file-changed`) from "renamed away" (file gone → `file-deleted`).
 >
 > Only one watcher is kept alive at a time in a `Mutex<Option<RecommendedWatcher>>` in `WatcherState`. Replacing it by storing a new watcher automatically drops — and stops — the previous one. Auto-reload sets the `navigatingHistory` flag before calling `loadFile` so the reload does not push a duplicate entry onto the history stack.
+>
+> Re-render is debounced on the frontend with a 300ms trailing-edge `debounce` (`ui/debounce.ts`), so a burst of `file-changed` events during an atomic save coalesces into a single re-render with no flicker; closing a file cancels any pending reload. Reloads preserve reading position — `reloadCurrentFile` captures `#content.scrollTop` and restores it (clamped to the new `scrollHeight`) after the fresh render settles — while manual opens still start at the top.
 
 ---
 
@@ -200,7 +202,7 @@ Navigate your documentation without leaving the app:
 >
 > In Tauri v2, `AppHandle::menu().get(id)` only searches root-level items — not nested submenu children. `nav-back` and `nav-forward` live inside the Go submenu, so `sync_nav_menu` iterates `menu.items()` → each `Submenu::items()` explicitly.
 >
-> Relative MD links are resolved using `resolveMdPath` in `ui/events/links.ts`, which normalizes `..` segments then checks `result.startsWith(base)` to reject traversal outside the open file's directory tree.
+> Relative MD links are resolved using `resolveMdHref` in `ui/renderer/resolvePath.ts` (called from `links.ts`), which normalizes `..` segments then checks `result.startsWith(base)` to reject traversal outside the open file's directory tree — sharing the same `resolveWithinBase` core as the image-src resolver.
 
 ---
 
@@ -373,24 +375,32 @@ flowchart TB
 - The frontend has no direct filesystem access — all reads go through `read_file` / `watch_file` Tauri commands
 - Every path received from the frontend is re-validated in Rust before use (`canonical_markdown_path`)
 - The WebView's CSP prevents arbitrary script execution, remote fetches, and image/font beacons
-- The unified processor is frozen at module load — rendering is stateless and safe to call from any event handler
+- The unified processor is frozen (one per enabled plugin-bundle set, cached) and runs in a Web Worker off the UI thread, with a synchronous fallback — rendering is stateless and safe to call from any event handler
 
 **Source layout:**
 
 | Path | Contents |
 |---|---|
-| `ui/main.ts` | App bootstrap, event listeners, history stack, `loadFile` |
-| `ui/renderer/pipeline.ts` | Frozen unified processor, all rehype plugins |
-| `ui/renderer/mermaid.ts` | Mermaid init, render, theme re-render, SVG sanitizer |
+| `ui/main.ts` | App bootstrap, event listeners, history stack, `loadFile`, debounced auto-reload + scroll preservation |
+| `ui/settings.ts` | Typed, validated façade over `localStorage` — the single source of truth for every persisted key |
+| `ui/debounce.ts` | Generic trailing-edge `debounce(fn, ms)` with `cancel()` |
+| `ui/renderer/renderClient.ts` | Main-thread render entry point — dispatches to the worker; synchronous fallback |
+| `ui/renderer/renderWorker.ts` | Web Worker running the unified pipeline off the UI thread |
+| `ui/renderer/pipeline.ts` | Bundle-aware unified processor builder + per-enabled-set frozen-processor cache |
+| `ui/renderer/bundles.ts` | Plugin-bundle registry (R1–R4 slots) + `collectBundlePlugins` — the toggle scaffolding |
+| `ui/renderer/resolvePath.ts` | Traversal-safe `resolveWithinBase` + shared `resolveImageSrc` / `resolveMdHref` derivatives |
+| `ui/renderer/mermaid.ts` | Mermaid init, render, theme re-render |
+| `ui/renderer/svgSanitize.ts` | Dependency-free sanitizer for Mermaid's loose-mode SVG output |
 | `ui/renderer/sanitize.ts` | `sanitizeOptions` extending `rehypeSanitize` defaultSchema |
+| `ui/renderer/purify.ts` | `sanitizeHtml` — final DOMPurify pass; keeps the `markdownviewer://` image scheme |
 | `ui/renderer/codeBlocks.ts` | Copy-to-clipboard buttons attached to Shiki code blocks |
-| `ui/events/theme.ts` | Theme detection, preference persistence, OS change listener |
-| `ui/events/links.ts` | Click delegation — anchor scroll, external open, MD navigation |
+| `ui/events/theme.ts` | Theme detection + OS change listener; persistence delegated to `settings.ts` |
+| `ui/events/links.ts` | Click delegation — anchor scroll, external open, MD navigation; default-prevents every content link |
 | `ui/events/drag.ts` | Native drag-drop overlay and file-open handler |
-| `ui/events/toc.ts` | TOC panel — build from DOM, scroll-spy via IntersectionObserver, toggle, persistence |
+| `ui/events/toc.ts` | TOC panel — build from DOM, scroll-spy via IntersectionObserver, toggle; visibility via `settings.ts` |
 | `ui/events/search.ts` | In-document search — mark.js integration, match navigation, open/close |
-| `ui/events/recent.ts` | Recent files — guarded localStorage read/write, native submenu sync |
-| `ui/events/storage.ts` | Safe localStorage wrapper used by theme, TOC, recents, and restore state |
+| `ui/events/recent.ts` | Recent files — MRU/dedup/trim + native submenu sync; persistence delegated to `settings.ts` |
+| `ui/events/storage.ts` | Low-level best-effort localStorage wrapper; consumed only by `settings.ts` |
 | `ui/styles/app.css` | App chrome, image states, Mermaid states, drag overlay, TOC panel, search bar |
 | `app/src/main.rs` | Tauri app setup, menu construction, event routing |
 | `app/src/commands.rs` | All `#[tauri::command]` handlers |

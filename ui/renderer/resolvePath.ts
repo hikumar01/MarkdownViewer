@@ -28,3 +28,20 @@ export function resolveWithinBase(basePath: string, input: string): string | nul
   if (!result.startsWith(base)) return null
   return result || null
 }
+
+// Resolves a relative image `src` against `basePath` for the renderer's
+// `rehypeResolveImages` plugin. Returns '' (falsy) on any rejection so the
+// caller can delete the src in one check. Kept here — next to `resolveMdHref`
+// and the shared `resolveWithinBase` — so image and link resolution can never
+// drift apart.
+export function resolveImageSrc(basePath: string, src: string): string {
+  return resolveWithinBase(basePath, src) ?? ''
+}
+
+// Resolves a relative markdown link `href` against `basePath` for click
+// navigation in links.ts. Drops any `?query`/`#fragment` before delegating to
+// the shared traversal-safe resolver. Returns null on any rejection.
+export function resolveMdHref(basePath: string, href: string): string | null {
+  const path = (href.split('?')[0] ?? '').split('#')[0] ?? ''
+  return resolveWithinBase(basePath, path)
+}
