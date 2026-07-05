@@ -16,36 +16,25 @@ import { initToc, updateToc, clearToc, toggleToc, isTocVisible } from './events/
 import { initSearch, updateSearchContent, clearSearch, openSearch } from './events/search'
 import { addToRecent, removeFromRecent, clearRecent, syncRecentMenu, getRecent } from './events/recent'
 import { attachCopyButtons } from './renderer/codeBlocks'
+import { attachImageHandlers } from './events/images'
 import { getLastFile, setLastFile, clearLastFile, getLastOpenDir, setLastOpenDir } from './settings'
 import { debounce } from './debounce'
+import { AppState } from './appState'
+import { getElements, showDocument, showWelcomeView } from './dom'
 
 // Auto-reload is debounced so a burst of file-change events (e.g. an editor
 // auto-saving on every keystroke) coalesces into a single re-render.
 const RELOAD_DEBOUNCE_MS = 300
 
-interface AppState {
-  filePath: string | null
-}
-
-const state: AppState = { filePath: null }
+// Single owner of the mutable session state (open file, history, nav guard).
+const app = new AppState()
 
 // --- Navigation history ---
 
-let historyStack: string[] = []
-let historyIndex = -1
-let navigatingHistory = false
-
-function pushHistory(path: string): void {
-  // Truncate any forward stack before adding the new entry.
-  historyStack = historyStack.slice(0, historyIndex + 1)
-  historyStack.push(path)
-  historyIndex = historyStack.length - 1
-}
-
 function syncNavMenu(): void {
   invoke('sync_nav_menu', {
-    canBack:    historyIndex > 0,
-    canForward: historyIndex < historyStack.length - 1,
+    canBack:    app.history.canBack,
+    canForward: app.history.canForward,
   }).catch(console.error)
 }
 
@@ -53,53 +42,49 @@ function syncNavMenu(): void {
 // Back/Forward (the entry already exists) and auto-reload (not a navigation).
 // The flag is reset in `finally` so a failed load never leaves it stuck on.
 async function loadWithoutHistory(path: string): Promise<void> {
-  navigatingHistory = true
+  app.navigatingHistory = true
   try { await loadFile(path) }
-  finally { navigatingHistory = false }
+  finally { app.navigatingHistory = false }
 }
 
 async function goBack(): Promise<void> {
-  if (historyIndex <= 0) return
-  historyIndex--
-  // historyIndex in-bounds is guaranteed by the guard above
-  await loadWithoutHistory(historyStack[historyIndex]!)
+  const path = app.history.back()
+  if (path === null) return
+  await loadWithoutHistory(path)
   syncNavMenu()
 }
 
 async function goForward(): Promise<void> {
-  if (historyIndex >= historyStack.length - 1) return
-  historyIndex++
-  await loadWithoutHistory(historyStack[historyIndex]!)
+  const path = app.history.forward()
+  if (path === null) return
+  await loadWithoutHistory(path)
   syncNavMenu()
 }
 
-// --- Image loading ---
+// --- File loading ---
 
-function attachImageHandlers(container: HTMLElement): void {
-  for (const img of container.querySelectorAll<HTMLImageElement>('img')) {
-    const wrapper = document.createElement('div')
-    wrapper.className = 'img-wrapper img-loading'
-    img.parentNode!.insertBefore(wrapper, img)
-    wrapper.appendChild(img)
-
-    const onLoad = (): void => wrapper.classList.remove('img-loading')
-    const onError = (): void => {
-      const broken = document.createElement('div')
-      broken.className = 'img-broken'
-      broken.title = img.src
-      wrapper.replaceWith(broken)
+// Handles a failed open. Kept separate from loadFile so the happy path stays a
+// linear read → render → commit sequence and the recovery UX lives in one place.
+async function handleOpenError(path: string, err: unknown): Promise<void> {
+  const msg = String(err)
+  // canonical_markdown_path returns "File not found" when the path no longer
+  // resolves (deleted/moved/renamed). Offer to prune the recents entry.
+  if (msg.includes('File not found') && getRecent().includes(path)) {
+    const remove = await dialogConfirm(
+      `${path}\n\nThis file no longer exists. Remove it from Recent Files?`,
+      { title: 'File Not Found', kind: 'warning', okLabel: 'Remove', cancelLabel: 'Keep' },
+    )
+    if (remove) {
+      removeFromRecent(path)
+      syncRecentMenu(app.filePath)
     }
-
-    if (img.complete) {
-      img.naturalWidth > 0 ? onLoad() : onError()
-    } else {
-      img.addEventListener('load', onLoad, { once: true })
-      img.addEventListener('error', onError, { once: true })
-    }
+  } else {
+    await dialogMessage(`Could not open file:\n${path}\n\n${err}`, {
+      title: 'Open Failed',
+      kind: 'error',
+    })
   }
 }
-
-// --- File loading ---
 
 async function loadFile(path: string): Promise<boolean> {
   // Normalize to forward-slash separators so lastIndexOf('/') works on Windows
@@ -121,23 +106,20 @@ async function loadFile(path: string): Promise<boolean> {
 
     // Read succeeded and HTML is ready — commit state.
     setBasePath(basePath)
-    state.filePath = path
+    app.filePath = path
     addToRecent(path)
-    if (!navigatingHistory) {
-      pushHistory(path)
+    if (!app.navigatingHistory) {
+      app.history.push(path)
       syncNavMenu()
     }
 
-    const contentEl = document.getElementById('content')!
+    const { content: contentEl } = getElements()
     // Final DOMPurify pass as defense-in-depth: rehypeSanitize already cleaned
     // the HTML, but this catches any edge case from rehype-raw or plugin bugs.
     // sanitizeHtml keeps the markdownviewer:// image scheme (see purify.ts).
     contentEl.innerHTML = sanitizeHtml(html)
     attachImageHandlers(contentEl)
-    contentEl.removeAttribute('hidden')
-
-    const welcomeEl = document.getElementById('welcome')!
-    welcomeEl.setAttribute('hidden', '')
+    showDocument()
 
     // Diagrams must be rendered after the HTML is in the DOM so Mermaid can
     // measure containers and produce correctly sized SVGs.
@@ -153,38 +135,21 @@ async function loadFile(path: string): Promise<boolean> {
     invoke('sync_doc_menu', { hasFile: true }).catch(console.error)
     return true
   } catch (err) {
-    const msg = String(err)
-    // canonical_markdown_path returns "File not found" when the path no longer
-    // resolves (deleted/moved/renamed). Offer to prune the recents entry.
-    if (msg.includes('File not found') && getRecent().includes(path)) {
-      const remove = await dialogConfirm(
-        `${path}\n\nThis file no longer exists. Remove it from Recent Files?`,
-        { title: 'File Not Found', kind: 'warning', okLabel: 'Remove', cancelLabel: 'Keep' },
-      )
-      if (remove) {
-        removeFromRecent(path)
-        syncRecentMenu(state.filePath)
-      }
-    } else {
-      await dialogMessage(`Could not open file:\n${path}\n\n${err}`, {
-        title: 'Open Failed',
-        kind: 'error',
-      })
-    }
+    await handleOpenError(path, err)
     return false
   }
 }
 
 async function reloadCurrentFile(): Promise<void> {
-  if (!state.filePath) return
+  if (!app.filePath) return
   // Preserve the reader's place: capture the scroll offset before the reload
   // blows away #content, then restore it (clamped to the new height) once the
   // fresh render — including Mermaid — has settled.
-  const before = document.getElementById('content')?.scrollTop ?? 0
+  const { content: contentEl } = getElements()
+  const before = contentEl.scrollTop
   // Auto-reload is not a navigation — skip pushing to history.
-  await loadWithoutHistory(state.filePath)
-  const contentEl = document.getElementById('content')
-  if (contentEl) contentEl.scrollTop = Math.min(before, contentEl.scrollHeight)
+  await loadWithoutHistory(app.filePath)
+  contentEl.scrollTop = Math.min(before, contentEl.scrollHeight)
 }
 
 // Trailing-edge debounced auto-reload (see RELOAD_DEBOUNCE_MS).
@@ -195,18 +160,13 @@ function showWelcome(): void {
   // Drop any queued auto-reload so it can't fire against a closed document.
   scheduleReload.cancel()
 
-  state.filePath = null
+  app.filePath = null
 
   // Closing a file ends the session — reset history so Back/Forward are disabled.
-  historyStack = []
-  historyIndex = -1
+  app.history.reset()
   syncNavMenu()
 
-  const welcomeEl = document.getElementById('welcome')!
-  welcomeEl.removeAttribute('hidden')
-
-  const contentEl = document.getElementById('content')!
-  contentEl.setAttribute('hidden', '')
+  showWelcomeView()
   clearToc()
   clearSearch()
   syncRecentMenu(null)
@@ -217,6 +177,8 @@ function showWelcome(): void {
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
+  const els = getElements()
+
   const initialTheme = detectTheme()
   initMermaid(initialTheme)
 
@@ -230,14 +192,11 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // Set up link delegation once — handles anchor scroll, external links, and
   // relative MD file links for all content loaded into #content.
-  attachLinkHandlers(
-    document.getElementById('content')!,
-    (path) => loadFile(path),
-  )
+  attachLinkHandlers(els.content, (path) => loadFile(path))
 
   // Drag-and-drop: open immediately when no file is open; confirm when one is.
   await initDragDrop(
-    () => state.filePath !== null,
+    () => app.filePath !== null,
     (path) => loadFile(path),
   )
 
@@ -246,14 +205,14 @@ window.addEventListener('DOMContentLoaded', async () => {
   window.addEventListener('theme-changed', (e) => {
     const theme = (e as CustomEvent<Theme>).detail
     initMermaid(theme)
-    rerenderMermaidTheme(document.getElementById('content')!).catch(console.error)
+    rerenderMermaidTheme(els.content).catch(console.error)
   })
 
   // Manual theme selection from the View → Theme menu.
   await listen<string>('theme-set', ({ payload: pref }) => {
     const theme = applyThemePreference(pref as ThemePreference)
     initMermaid(theme)
-    rerenderMermaidTheme(document.getElementById('content')!).catch(console.error)
+    rerenderMermaidTheme(els.content).catch(console.error)
   })
 
   // Go menu navigation.
@@ -274,7 +233,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     })
   })
 
-  await listen('close-file', () => { if (state.filePath) showWelcome() })
+  await listen('close-file', () => { if (app.filePath) showWelcome() })
 
   await listen('find-in-doc', () => openSearch())
 
@@ -285,7 +244,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   await listen('clear-recent', () => {
     clearRecent()
-    syncRecentMenu(state.filePath)
+    syncRecentMenu(app.filePath)
   })
 
   await listen('toc-toggle', () => {
@@ -296,7 +255,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   // File → Open File… — dialog is opened here so we can pass the current
   // file's directory (or the last successfully opened directory) as the start.
   await listen('menu-open-file', async () => {
-    const startDir = state.filePath ?? getLastOpenDir() ?? null
+    const startDir = app.filePath ?? getLastOpenDir() ?? null
     const picked = await invoke<string | null>('open_file_dialog', { startDir })
     if (picked) await loadFile(picked)
   })
