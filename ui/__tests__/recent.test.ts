@@ -30,13 +30,23 @@ describe('recent', () => {
     expect(getRecent()).toEqual(['/a.md', '/b.md'])
   })
 
-  it('caps the list at MAX_RECENT (10) entries', () => {
-    for (let i = 0; i < 15; i++) addToRecent(`/f${i}.md`)
+  it('caps the stored list at MAX_STORED (50) entries', () => {
+    for (let i = 0; i < 60; i++) addToRecent(`/f${i}.md`)
     const recent = getRecent()
-    expect(recent.length).toBe(10)
-    // Most recent is f14, oldest kept is f5
-    expect(recent[0]).toBe('/f14.md')
-    expect(recent[9]).toBe('/f5.md')
+    expect(recent.length).toBe(50)
+    // Most recent is f59, oldest kept is f10
+    expect(recent[0]).toBe('/f59.md')
+    expect(recent[49]).toBe('/f10.md')
+  })
+
+  it('syncRecentMenu displays at most MAX_DISPLAYED (15) entries', async () => {
+    for (let i = 0; i < 30; i++) addToRecent(`/f${i}.md`)
+    await syncRecentMenu(null)
+    const call = __invokeCalls[__invokeCalls.length - 1]
+    expect(call.cmd).toBe('sync_recent_menu')
+    expect(call.args.paths.length).toBe(15)
+    expect(call.args.paths[0]).toBe('/f29.md')
+    expect(call.args.paths[14]).toBe('/f15.md')
   })
 
   it('removeFromRecent drops the matching entry only', () => {
