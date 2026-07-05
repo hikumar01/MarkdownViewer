@@ -29,8 +29,9 @@
         <button id="search-close" class="search-btn" title="Close (Escape)">✕</button>
       </div>
 
-      <!-- hidden until a file is loaded; .markdown-body activates github-markdown-css -->
-      <main id="content" class="markdown-body" hidden></main>
+      <!-- Visibility is class-based (#app.has-file), not the hidden attribute —
+           see the class-based UI-toggle ADR. .markdown-body activates github-markdown-css -->
+      <main id="content" class="markdown-body"></main>
 
       <div id="welcome">
         <h1>Markdown Viewer</h1>

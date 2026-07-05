@@ -81,9 +81,13 @@ flowchart TB
 
 | Path | Contents |
 |---|---|
-| `ui/main.ts` | App bootstrap, event listeners, history stack, `loadFile`, debounced auto-reload + scroll preservation |
+| `ui/main.ts` | App bootstrap and event wiring — `loadFile`/`reloadCurrentFile` lifecycle, debounced auto-reload + scroll preservation. Delegates state to `appState.ts`, history to `history.ts`, and element access to `dom.ts` |
+| `ui/appState.ts` | `AppState` — single owner of the mutable session state (open file path, navigation-in-progress guard, `NavigationHistory` instance) |
+| `ui/history.ts` | `NavigationHistory` — the pure back/forward stack (push/back/forward/reset + `canBack`/`canForward`); no DOM or IPC dependencies, unit-tested in isolation |
+| `ui/dom.ts` | Cached top-level element refs (`getElements`) + class-based document/welcome toggle (`showDocument`/`showWelcomeView` via `#app.has-file`) |
 | `ui/settings.ts` | Typed façade over `localStorage` — the single source of truth for every persisted key (theme, TOC, recents, restore paths, enabled bundles) with validation + defaults |
 | `ui/debounce.ts` | Generic trailing-edge `debounce(fn, ms)` with a `cancel()` handle |
+| `ui/events/images.ts` | `attachImageHandlers` — wraps rendered `<img>`s for load/error styling and broken-image placeholders |
 | `ui/renderer/renderClient.ts` | Main-thread render entry point — dispatches to the worker and awaits the result; falls back to synchronous rendering when workers are unavailable |
 | `ui/renderer/renderWorker.ts` | Dedicated Web Worker that runs the unified pipeline off the UI thread |
 | `ui/renderer/pipeline.ts` | Bundle-aware unified processor builder + per-enabled-set frozen-processor cache, all rehype plugins |
@@ -103,7 +107,7 @@ flowchart TB
 | `ui/events/storage.ts` | Best-effort low-level `localStorage` wrapper; only `settings.ts` consumes it directly |
 | `ui/styles/app.css` | App chrome, image states, Mermaid states, drag overlay, TOC panel, search bar, link tooltip |
 | `app/src/main.rs` | Tauri app setup, menu construction, event routing |
-| `app/src/commands.rs` | All `#[tauri::command]` handlers |
+| `app/src/commands/` | `#[tauri::command]` handlers, split by domain: `file.rs` (read/watch + path validation), `menu.rs` (nav/doc/toc/theme/recent menu sync), `system.rs` (window title, external URLs, file dialog, cold-launch handoff); `mod.rs` re-exports the two helpers `main.rs` calls directly |
 | `app/src/protocol.rs` | `markdownviewer://` URI scheme — secure local file serving |
 | `app/build.rs` | Icon generation from `icons/icon.svg` at build time |
 
@@ -1016,9 +1020,9 @@ The search bar (`#search-bar`) is a floating overlay managed by `ui/events/searc
 
 ## Recent Files
 
-Recent files are stored in `localStorage['recent']` as a JSON array of absolute file paths (max 10, MRU first). `ui/events/recent.ts` is the single owner of this data and reads/writes through the best-effort storage helper.
+Recent files are stored in `localStorage['recent']` as a JSON array of absolute file paths (MRU first). `ui/events/recent.ts` is the single owner of this data and reads/writes through the best-effort storage helper. Two caps apply: `MAX_STORED` (50) bounds the persisted list, while `MAX_DISPLAYED` (15) bounds how many entries are passed to the native "Open Recent" submenu.
 
-**Write path:** `addToRecent(path)` prepends the path, filters duplicates, trims to 10, and saves. It runs only after `read_file` succeeds and markdown has rendered, so failed opens do not pollute the list.
+**Write path:** `addToRecent(path)` prepends the path, filters duplicates, trims to `MAX_STORED` (50), and saves. It runs only after `read_file` succeeds and markdown has rendered, so failed opens do not pollute the list.
 
 **Submenu rebuild:** `syncRecentMenu(currentPath)` calls the async `sync_recent_menu` Tauri command, passing the full list and the currently open path. The command:
 
@@ -1064,7 +1068,16 @@ WKWebView (macOS) applies the app's author stylesheet *after* the UA stylesheet.
 /* Drag-drop overlay */
 #drop-overlay { display: none; }
 #drop-overlay.drag-active { display: flex; }
+
+/* Document vs. welcome view — keyed off an #app context class rather than the
+   hidden attribute, so the two never rely on UA [hidden] behavior. */
+#content { display: none; }
+#app.has-file #content { display: block; }
+#welcome { display: flex; }
+#app.has-file #welcome { display: none; }
 ```
+
+The document (`#content`) and welcome (`#welcome`) panes also follow this pattern via the `#app.has-file` context class (toggled by `showDocument`/`showWelcomeView` in `ui/dom.ts`) — they previously used the `hidden` attribute, which is exactly the WKWebView pitfall this ADR warns against.
 
 #### Consequences
 

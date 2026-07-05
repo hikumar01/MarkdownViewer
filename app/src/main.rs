@@ -179,18 +179,18 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::read_file,
-            commands::set_window_title,
-            commands::watch_file,
-            commands::unwatch_file,
-            commands::sync_theme_menu,
-            commands::sync_nav_menu,
-            commands::sync_doc_menu,
-            commands::open_url,
-            commands::get_pending_open,
-            commands::sync_toc_menu,
-            commands::sync_recent_menu,
-            commands::open_file_dialog,
+            commands::file::read_file,
+            commands::file::watch_file,
+            commands::file::unwatch_file,
+            commands::menu::sync_theme_menu,
+            commands::menu::sync_nav_menu,
+            commands::menu::sync_doc_menu,
+            commands::menu::sync_toc_menu,
+            commands::menu::sync_recent_menu,
+            commands::system::set_window_title,
+            commands::system::open_url,
+            commands::system::get_pending_open,
+            commands::system::open_file_dialog,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

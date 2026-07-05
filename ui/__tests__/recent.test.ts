@@ -42,11 +42,12 @@ describe('recent', () => {
   it('syncRecentMenu displays at most MAX_DISPLAYED (15) entries', async () => {
     for (let i = 0; i < 30; i++) addToRecent(`/f${i}.md`)
     await syncRecentMenu(null)
-    const call = __invokeCalls[__invokeCalls.length - 1]
+    const call = __invokeCalls[__invokeCalls.length - 1]!
     expect(call.cmd).toBe('sync_recent_menu')
-    expect(call.args.paths.length).toBe(15)
-    expect(call.args.paths[0]).toBe('/f29.md')
-    expect(call.args.paths[14]).toBe('/f15.md')
+    const paths = call.args!.paths as string[]
+    expect(paths.length).toBe(15)
+    expect(paths[0]).toBe('/f29.md')
+    expect(paths[14]).toBe('/f15.md')
   })
 
   it('removeFromRecent drops the matching entry only', () => {
