@@ -32,13 +32,36 @@ body {
   flex-direction: column;
 }
 
+/* #panes fills the area below the search bar and lays the editor + preview out
+   side by side in edit mode. min-height/width:0 lets the flex children scroll
+   instead of overflowing. */
+#panes {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+/* Editor pane (CodeMirror) — hidden unless a file is open AND edit mode is on. */
+#editor {
+  display: none;
+  min-width: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+}
+
+#app.has-file.edit-mode #editor {
+  display: block;
+  flex: 1 1 50%;
+}
+
 /* Class-based show/hide (see the class-based UI-toggle ADR): #content and
    #welcome default to their welcome-screen state and flip on #app.has-file,
    rather than relying on the `hidden` attribute (which WKWebView author
    stylesheets can override). */
 #content {
   display: none;
-  flex: 1;
+  flex: 1 1 50%;
+  min-width: 0;
   overflow-y: auto;
   padding: 2rem 1.5rem 4rem;
   scrollbar-width: thin;

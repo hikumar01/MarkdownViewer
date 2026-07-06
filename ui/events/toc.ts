@@ -37,14 +37,19 @@ export function toggleToc(): boolean {
 }
 
 export function initToc(): void {
-  applyVisibility(getPanel(), isTocVisible())
+  // The TOC is meaningful only for an open document. Start hidden; visibility is
+  // applied from the saved preference by updateToc() once a file is loaded.
+  applyVisibility(getPanel(), false)
 }
 
 export function clearToc(): void {
   observer?.disconnect()
   observer = null
   activeId = null
-  getPanel().innerHTML = ''
+  const panel = getPanel()
+  panel.innerHTML = ''
+  // No document → the panel must not linger on screen (see initToc).
+  applyVisibility(panel, false)
 }
 
 function buildEntries(container: HTMLElement): TocEntry[] {

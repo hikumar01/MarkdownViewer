@@ -6,6 +6,7 @@ export interface AppElements {
   app: HTMLElement
   content: HTMLElement
   welcome: HTMLElement
+  editor: HTMLElement
 }
 
 let cached: AppElements | null = null
@@ -16,6 +17,7 @@ export function getElements(): AppElements {
     app: document.getElementById('app')!,
     content: document.getElementById('content')!,
     welcome: document.getElementById('welcome')!,
+    editor: document.getElementById('editor')!,
   }
   return cached
 }
@@ -30,4 +32,9 @@ export function showDocument(): void {
 
 export function showWelcomeView(): void {
   getElements().app.classList.remove('has-file')
+}
+
+// Toggles the split editor/preview layout via the `#app.edit-mode` class.
+export function setEditLayout(on: boolean): void {
+  getElements().app.classList.toggle('edit-mode', on)
 }

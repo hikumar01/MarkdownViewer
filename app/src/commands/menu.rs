@@ -81,8 +81,34 @@ pub fn sync_toc_menu(app: tauri::AppHandle, visible: bool) -> Result<(), String>
 #[tauri::command]
 pub fn sync_doc_menu(app: tauri::AppHandle, has_file: bool) -> Result<(), String> {
     let Some(menu) = app.menu() else { return Ok(()) };
-    // close-file lives in File and find-in-doc in Edit — both one level deep.
-    set_items_enabled(&menu, &[("close-file", has_file), ("find-in-doc", has_file)])
+    // Edit Mode and Table of Contents are CheckMenuItems, so enable them
+    // separately from the plain MenuItems; both apply only to an open document.
+    for id in ["edit-mode", "toc-toggle"] {
+        if let Some(item) = find_check_item(&menu, id) {
+            item.set_enabled(has_file).map_err(|e| e.to_string())?;
+        }
+    }
+    // close-file/save-as-file live in File and find-in-doc in Edit — all one
+    // level deep. Save As works on any open document (unlike Save, which is
+    // gated on dirty by sync_edit_menu).
+    set_items_enabled(&menu, &[
+        ("close-file", has_file),
+        ("save-as-file", has_file),
+        ("find-in-doc", has_file),
+    ])
+}
+
+/// Syncs the View → Edit Mode checkmark and the File → Save enabled state.
+/// Called whenever edit mode is toggled or the document's dirty state changes:
+/// Save is only enabled when there are unsaved changes, and the checkmark
+/// mirrors whether the split editor is currently open.
+#[tauri::command]
+pub fn sync_edit_menu(app: tauri::AppHandle, edit_mode: bool, dirty: bool) -> Result<(), String> {
+    let Some(menu) = app.menu() else { return Ok(()) };
+    if let Some(item) = find_check_item(&menu, "edit-mode") {
+        item.set_checked(edit_mode).map_err(|e| e.to_string())?;
+    }
+    set_items_enabled(&menu, &[("save-file", dirty)])
 }
 
 /// Rebuilds the "Open Recent" submenu from the list the frontend keeps in localStorage.

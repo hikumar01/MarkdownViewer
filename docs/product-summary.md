@@ -4,7 +4,7 @@
 
 Markdown Viewer renders GitHub-flavored Markdown beautifully — including Mermaid diagrams and syntax-highlighted code blocks — without sending your files to any server. Built with Tauri v2 (Rust + WebView), it runs natively on macOS and Windows with a small memory footprint and instant cold start.
 
-Open a file once and the view stays current: Markdown Viewer watches for saves and re-renders automatically, with any editor. Navigate your documentation the way it was meant to be read — follow relative links between files, jump to anchored headings, go back with a keyboard shortcut.
+Open a file once and the view stays current: Markdown Viewer watches for saves and re-renders automatically, with any editor. Navigate your documentation the way it was meant to be read — follow relative links between files, jump to anchored headings, go back with a keyboard shortcut. When you need to make a quick change, flip on **Edit Mode** for a split editor/preview and save it back to disk — reading stays the default, editing is one keystroke away.
 
 ---
 
@@ -14,6 +14,7 @@ Markdown Viewer is for people who want a dedicated reading surface for local Mar
 
 - **Private by design:** documents stay on disk; no telemetry, remote markdown fetches, or cloud rendering
 - **Useful for real docs:** Mermaid diagrams, GFM tables/task lists/footnotes, code highlighting, search, TOC, and history are all part of the default reading workflow
+- **Read first, edit when you need to:** the default is a distraction-free viewer; an opt-in split editor lets you make and save quick changes without leaving the app
 - **Lightweight enough to leave open:** Tauri keeps the app small by using Rust for native integration and the OS WebView for rendering
 
 ## How It Works
@@ -56,6 +57,7 @@ The backend owns file access and platform integration. The frontend owns renderi
 | **Code** | Syntax highlighting for 100+ languages via Shiki — VS Code token colors, light and dark palettes |
 | **Images** | Relative-path local images with loading skeleton and broken-image placeholder |
 | **File opening** | Menu (Cmd+O), drag-and-drop, Finder double-click, CLI argument, deep link URL, Recent Files submenu |
+| **Editing** | Opt-in split editor/preview (Cmd+E) — CodeMirror with markdown highlighting, live preview, scroll sync, explicit Save (Cmd+S) and Save As… (Cmd+Shift+S) |
 | **Live reload** | Automatic re-render on every save — works with any editor, including atomic-save editors (VS Code, Vim, JetBrains) |
 | **Navigation** | Back/Forward history (Cmd+[ / Cmd+]), relative `.md` link following, anchor scroll, external link preview tooltip |
 | **Table of Contents** | Floating TOC panel with scroll-spy; H1–H6 hierarchy; click-to-jump; toggle with Cmd+Shift+T |
@@ -188,6 +190,23 @@ The rendered view updates automatically within milliseconds of the file being sa
 
 ---
 
+### Editing (Split View)
+
+Reading is the default; editing is opt-in. Toggle **View → Edit Mode** (Cmd+E) to split the window into a CodeMirror editor on the left and the live preview on the right.
+
+- **Live preview:** the preview re-renders as you type (debounced), through the exact same pipeline used for reading — what you see while editing is what you get when you close the editor
+- **Markdown editor:** syntax highlighting, line numbers, and word-wrapped long lines; the editor chrome follows the app's light/dark theme
+- **Scroll sync:** the editor and preview scroll together proportionally
+- **Explicit Save (Cmd+S):** writes back to the open file — no auto-save; a leading `•` in the window title marks unsaved changes, and Save is enabled only when there are edits to write
+- **Save As… (Cmd+Shift+S):** writes the current document to a new location via the native save dialog (defaulting to the current file's folder and name) and continues editing the new file
+- **Never lose edits:** switching files, closing, or leaving edit mode with unsaved changes prompts a confirm; if the open file is deleted on disk while you have unsaved edits, you're offered Save As instead of a silent discard
+
+> **For engineers:** The editor is a thin CodeMirror 6 wrapper (`ui/editor/editor.ts`) exposing a small text-in/text-out surface; `main.ts` never imports CodeMirror internals. The split layout is class-based (`#app.edit-mode`), consistent with the rest of the UI. Saving goes through two typed Rust commands — `write_file` (overwrite the existing `.md`) and `write_file_as` (create a new file, chosen via `save_file_dialog`) — both enforcing the markdown-only extension and 50 MB size guards. The frontend owns reload suppression: a save opens a short window during which the watcher event its own write triggers is ignored, so a save can't bounce back and reset the editor. Live preview shares `renderPreview` (`ui/preview.ts`) with the initial load, so there is a single render path.
+>
+> See [Editor and Split View decision](./architecture.md#editor-and-split-view).
+
+---
+
 ### Navigation
 
 Navigate your documentation without leaving the app:
@@ -262,7 +281,7 @@ The last 10 opened files are available under File → Open Recent for quick acce
 
 > **For engineers:** The list is stored as a JSON array in `localStorage['recent']` through the best-effort storage helper. `ui/events/recent.ts` owns all read/write operations — `addToRecent`, `removeFromRecent`, `clearRecent`, and `syncRecentMenu`.
 >
-> The native "Open Recent" submenu is rebuilt by the `sync_recent_menu` Tauri command (in `commands.rs`) on every file open, file close, and startup. This command is `async` — all Tauri menu APIs (`remove_at`, `append`, `MenuItem::with_id`) dispatch to the main thread internally via `run_main_thread!`. A sync command running on the main thread would deadlock waiting for itself.
+> The native "Open Recent" submenu is rebuilt by the `sync_recent_menu` Tauri command (in `commands/menu.rs`) on every file open, file close, and startup. This command is `async` — all Tauri menu APIs (`remove_at`, `append`, `MenuItem::with_id`) dispatch to the main thread internally via `run_main_thread!`. A sync command running on the main thread would deadlock waiting for itself.
 >
 > Menu item IDs embed a generation counter: `rf-{gen}-{idx}` for existing files, `rfc-{gen}` for the Clear button. Every rebuild increments the counter so re-created items never collide with IDs still registered in Tauri's global ID registry from the previous build.
 >
@@ -348,13 +367,14 @@ flowchart TB
             direction TB
             main["main.ts — bootstrap · history · events"]
             renderer["renderer/ — unified pipeline · Mermaid · Shiki"]
+            editor["editor/ — CodeMirror split-view editor"]
             ev["events/ — theme · links · drag-drop · toc · search · recent"]
             css["styles/app.css — tokens · layouts · states"]
         end
         subgraph BE["Rust Backend · Tauri v2"]
             direction TB
             mainrs["main.rs — app setup · menus · routing"]
-            cmds["commands.rs — IPC command handlers"]
+            cmds["commands/ — file · menu · system handlers"]
             proto["protocol.rs — markdownviewer:// serving"]
         end
         FE <-->|"Tauri IPC — invoke / emit — capability-gated"| BE
@@ -362,7 +382,7 @@ flowchart TB
 
     subgraph OS["Native Platform"]
         direction LR
-        fs["Filesystem — read · watch"]
+        fs["Filesystem — read · write · watch"]
         fw["File Watcher — FSEvents / ReadDirChanges"]
         svc["OS Services — menus · URL scheme · open crate"]
     end
@@ -376,35 +396,9 @@ flowchart TB
 - Every path received from the frontend is re-validated in Rust before use (`canonical_markdown_path`)
 - The WebView's CSP prevents arbitrary script execution, remote fetches, and image/font beacons
 - The unified processor is frozen (one per enabled plugin-bundle set, cached) and runs in a Web Worker off the UI thread, with a synchronous fallback — rendering is stateless and safe to call from any event handler
+- Editing is opt-in and additive: a CodeMirror split view (`ui/editor/`) drives the same render pipeline for live preview, and saving goes through typed Rust write commands (`write_file` / `write_file_as`) that keep the markdown-only and size guards
 
-**Source layout:**
-
-| Path | Contents |
-|---|---|
-| `ui/main.ts` | App bootstrap, event listeners, history stack, `loadFile`, debounced auto-reload + scroll preservation |
-| `ui/settings.ts` | Typed, validated façade over `localStorage` — the single source of truth for every persisted key |
-| `ui/debounce.ts` | Generic trailing-edge `debounce(fn, ms)` with `cancel()` |
-| `ui/renderer/renderClient.ts` | Main-thread render entry point — dispatches to the worker; synchronous fallback |
-| `ui/renderer/renderWorker.ts` | Web Worker running the unified pipeline off the UI thread |
-| `ui/renderer/pipeline.ts` | Bundle-aware unified processor builder + per-enabled-set frozen-processor cache |
-| `ui/renderer/bundles.ts` | Plugin-bundle registry (R1–R4 slots) + `collectBundlePlugins` — the toggle scaffolding |
-| `ui/renderer/resolvePath.ts` | Traversal-safe `resolveWithinBase` + shared `resolveImageSrc` / `resolveMdHref` derivatives |
-| `ui/renderer/mermaid.ts` | Mermaid init, render, theme re-render |
-| `ui/renderer/svgSanitize.ts` | Dependency-free sanitizer for Mermaid's loose-mode SVG output |
-| `ui/renderer/sanitize.ts` | `sanitizeOptions` extending `rehypeSanitize` defaultSchema |
-| `ui/renderer/purify.ts` | `sanitizeHtml` — final DOMPurify pass; keeps the `markdownviewer://` image scheme |
-| `ui/renderer/codeBlocks.ts` | Copy-to-clipboard buttons attached to Shiki code blocks |
-| `ui/events/theme.ts` | Theme detection + OS change listener; persistence delegated to `settings.ts` |
-| `ui/events/links.ts` | Click delegation — anchor scroll, external open, MD navigation; default-prevents every content link |
-| `ui/events/drag.ts` | Native drag-drop overlay and file-open handler |
-| `ui/events/toc.ts` | TOC panel — build from DOM, scroll-spy via IntersectionObserver, toggle; visibility via `settings.ts` |
-| `ui/events/search.ts` | In-document search — mark.js integration, match navigation, open/close |
-| `ui/events/recent.ts` | Recent files — MRU/dedup/trim + native submenu sync; persistence delegated to `settings.ts` |
-| `ui/events/storage.ts` | Low-level best-effort localStorage wrapper; consumed only by `settings.ts` |
-| `ui/styles/app.css` | App chrome, image states, Mermaid states, drag overlay, TOC panel, search bar |
-| `app/src/main.rs` | Tauri app setup, menu construction, event routing |
-| `app/src/commands.rs` | All `#[tauri::command]` handlers |
-| `app/src/protocol.rs` | `markdownviewer://` URI scheme — secure local file serving |
+**Source layout:** the frontend lives in `ui/` (bootstrap `main.ts`; render pipeline `renderer/`; editor `editor/`; feature modules `events/`; typed persistence `settings.ts`) and the Rust backend in `app/src/` (`main.rs`, `commands/`, `protocol.rs`). See the full annotated table in [architecture.md → Source Layout](./architecture.md#source-layout) — kept in one place to avoid drift.
 
 ---
 
@@ -427,6 +421,9 @@ All shortcuts available in the current release.
 |---|---|
 | `Cmd+O` | Open file |
 | `Cmd+W` | Close current file |
+| `Cmd+S` | Save (in Edit Mode) |
+| `Cmd+Shift+S` | Save As… (in Edit Mode) |
+| `Cmd+E` | Toggle Edit Mode (split editor/preview) |
 | `Cmd+[` | Navigate back |
 | `Cmd+]` | Navigate forward |
 | `Cmd+F` | Find in document |

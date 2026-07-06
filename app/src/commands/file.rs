@@ -54,6 +54,83 @@ pub fn read_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&canonical).map_err(|_| "Failed to read file".to_string())
 }
 
+/// Writes `content` back to an existing markdown file (editor save).
+/// Reuses `canonical_markdown_path`, so the path must already resolve to a real
+/// `.md`/`.markdown` file — this command never creates new files, and the same
+/// traversal/symlink/extension guards as reads apply. The content is capped at
+/// the same 50 MB ceiling as reads. Per the File-write IPC Design ADR the
+/// frontend owns reload suppression around this call.
+#[tauri::command]
+pub fn write_file(path: String, content: String) -> Result<(), String> {
+    let canonical = canonical_markdown_path(&path)?;
+    if content.len() as u64 > MAX_FILE_BYTES {
+        return Err("File is too large to save (50 MB limit)".to_string());
+    }
+    // Generic error message — never leak the canonical path or OS-specific
+    // io::Error text back to the frontend.
+    std::fs::write(&canonical, content).map_err(|_| "Failed to save file".to_string())
+}
+
+/// Writes `content` to a new-or-existing markdown file chosen via the native
+/// Save-As dialog. Unlike `write_file`, the target need not exist yet, so it
+/// can't be canonicalized up front. Defense-in-depth for this IPC entry point:
+///   - the same 50 MB content cap as reads/writes,
+///   - the markdown-only invariant (a missing extension defaults to `.md`;
+///     any non-markdown extension is rejected),
+///   - the *parent directory* is canonicalized (resolving symlinks and
+///     rejecting non-existent trees) and the file name rejoined onto the real
+///     directory, so the write can't land somewhere the parent doesn't resolve.
+/// Returns the canonical path of the written file so the frontend can adopt it
+/// as the current document (title, watcher, recents).
+#[tauri::command]
+pub fn write_file_as(path: String, content: String) -> Result<String, String> {
+    if content.len() as u64 > MAX_FILE_BYTES {
+        return Err("File is too large to save (50 MB limit)".to_string());
+    }
+
+    let target = std::path::Path::new(&path);
+    let parent = target
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| "Invalid save location".to_string())?;
+    let raw_name = target
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "Invalid file name".to_string())?;
+
+    let ext = target
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    let file_name = match ext.as_str() {
+        "md" | "markdown" => raw_name.to_string(),
+        // No extension typed — default to .md (some platforms don't append it
+        // from the dialog filter).
+        "" => format!("{raw_name}.md"),
+        _ => return Err("Only markdown files can be saved".to_string()),
+    };
+
+    let canonical_dir =
+        std::fs::canonicalize(parent).map_err(|_| "Save location does not exist".to_string())?;
+    if !canonical_dir.is_dir() {
+        return Err("Save location is not a directory".to_string());
+    }
+    let dest = canonical_dir.join(&file_name);
+    // Never clobber a directory that happens to share the chosen name.
+    if dest.is_dir() {
+        return Err("A folder with that name already exists".to_string());
+    }
+
+    std::fs::write(&dest, content).map_err(|_| "Failed to save file".to_string())?;
+
+    // Now that it exists, hand back the fully canonical path so the frontend
+    // adopts the same stable path form as read_file/watch_file emit.
+    std::fs::canonicalize(&dest)
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|_| "Failed to save file".to_string())
+}
+
 #[tauri::command]
 pub fn watch_file(
     path: String,
@@ -200,6 +277,83 @@ mod tests {
         handle.set_len(MAX_FILE_BYTES + 1).unwrap();
         let err = read_file(f.to_str().unwrap().to_string()).unwrap_err();
         assert!(err.contains("too large"), "unexpected error: {err}");
+    }
+
+    // --- write_file -------------------------------------------------------
+
+    #[test]
+    fn write_file_overwrites_an_existing_markdown_file() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("doc.md");
+        fs::write(&f, "# old").unwrap();
+        write_file(f.to_str().unwrap().to_string(), "# new\n\nbody".to_string()).unwrap();
+        assert_eq!(fs::read_to_string(&f).unwrap(), "# new\n\nbody");
+    }
+
+    #[test]
+    fn write_file_rejects_non_markdown() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("notes.txt");
+        fs::write(&f, "x").unwrap();
+        let err = write_file(f.to_str().unwrap().to_string(), "y".to_string()).unwrap_err();
+        assert!(err.contains("markdown"), "unexpected error: {err}");
+        // The original content must be untouched on rejection.
+        assert_eq!(fs::read_to_string(&f).unwrap(), "x");
+    }
+
+    #[test]
+    fn write_file_rejects_missing_file() {
+        let err = write_file("/does/not/exist/x.md".to_string(), "y".to_string()).unwrap_err();
+        assert!(err.contains("not found") || err.contains("File"), "unexpected error: {err}");
+    }
+
+    // --- write_file_as ----------------------------------------------------
+
+    #[test]
+    fn write_file_as_creates_a_new_markdown_file() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("new.md");
+        let returned = write_file_as(f.to_str().unwrap().to_string(), "# hi".to_string()).unwrap();
+        assert_eq!(fs::read_to_string(&f).unwrap(), "# hi");
+        // The returned path is canonical and points at the written file.
+        assert_eq!(returned, fs::canonicalize(&f).unwrap().to_string_lossy());
+    }
+
+    #[test]
+    fn write_file_as_defaults_missing_extension_to_md() {
+        let dir = tempdir().unwrap();
+        let bare = dir.path().join("notes");
+        let returned = write_file_as(bare.to_str().unwrap().to_string(), "x".to_string()).unwrap();
+        let expected = dir.path().join("notes.md");
+        assert!(expected.is_file());
+        assert_eq!(returned, fs::canonicalize(&expected).unwrap().to_string_lossy());
+    }
+
+    #[test]
+    fn write_file_as_rejects_non_markdown_extension() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("notes.txt");
+        let err = write_file_as(f.to_str().unwrap().to_string(), "x".to_string()).unwrap_err();
+        assert!(err.contains("markdown"), "unexpected error: {err}");
+        assert!(!f.exists(), "no file should be created on rejection");
+    }
+
+    #[test]
+    fn write_file_as_rejects_nonexistent_parent_directory() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("missing-subdir").join("x.md");
+        let err = write_file_as(f.to_str().unwrap().to_string(), "x".to_string()).unwrap_err();
+        assert!(err.contains("does not exist"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn write_file_as_rejects_content_over_the_size_cap() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("big.md");
+        let huge = "a".repeat((MAX_FILE_BYTES + 1) as usize);
+        let err = write_file_as(f.to_str().unwrap().to_string(), huge).unwrap_err();
+        assert!(err.contains("too large"), "unexpected error: {err}");
+        assert!(!f.exists(), "no file should be created on rejection");
     }
 
     #[test]

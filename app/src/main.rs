@@ -128,6 +128,15 @@ fn main() {
                     "nav-back" | "nav-forward" | "toc-toggle" | "find-in-doc" => {
                         let _ = app.emit(event.id().as_ref(), ());
                     }
+                    "save-file" => {
+                        let _ = app.emit("menu-save", ());
+                    }
+                    "save-as-file" => {
+                        let _ = app.emit("menu-save-as", ());
+                    }
+                    "edit-mode" => {
+                        let _ = app.emit("toggle-edit", ());
+                    }
                     "theme-system" | "theme-light" | "theme-dark" => {
                         let chosen = event.id().as_ref()
                             .strip_prefix("theme-")
@@ -180,17 +189,21 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::file::read_file,
+            commands::file::write_file,
+            commands::file::write_file_as,
             commands::file::watch_file,
             commands::file::unwatch_file,
             commands::menu::sync_theme_menu,
             commands::menu::sync_nav_menu,
             commands::menu::sync_doc_menu,
+            commands::menu::sync_edit_menu,
             commands::menu::sync_toc_menu,
             commands::menu::sync_recent_menu,
             commands::system::set_window_title,
             commands::system::open_url,
             commands::system::get_pending_open,
             commands::system::open_file_dialog,
+            commands::system::save_file_dialog,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -239,6 +252,10 @@ fn main() {
 fn build_menu<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     let sep   = || PredefinedMenuItem::separator(app);
     let open  = MenuItem::with_id(app, "open-file",  "Open File…", true, Some("CmdOrCtrl+O"))?;
+    let save  = MenuItem::with_id(app, "save-file",  "Save",       false, Some("CmdOrCtrl+S"))?;
+    // Save As — enabled whenever a document is open (sync_doc_menu), not just
+    // when dirty, so the current document can be written to a new location.
+    let save_as = MenuItem::with_id(app, "save-as-file", "Save As…", false, Some("CmdOrCtrl+Shift+S"))?;
     let close = MenuItem::with_id(app, "close-file", "Close",      false, Some("CmdOrCtrl+W"))?;
 
     // "Open Recent" submenu — starts with placeholder; sync_recent_menu rebuilds it on every file open.
@@ -256,6 +273,8 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
         &sep()?,
         &recent_sub,
         &sep()?,
+        &save,
+        &save_as,
         &close,
     ])?;
 
@@ -289,8 +308,13 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
         &theme_dark,
     ])?;
 
-    // TOC — checked by default; sync_toc_menu updates on startup from localStorage.
-    let toc_toggle = CheckMenuItem::with_id(app, "toc-toggle", "Table of Contents", true, true, Some("CmdOrCtrl+Shift+T"))?;
+    // TOC — checked reflects the saved preference (sync_toc_menu); starts
+    // disabled since there's no open document yet (sync_doc_menu enables it).
+    let toc_toggle = CheckMenuItem::with_id(app, "toc-toggle", "Table of Contents", false, true, Some("CmdOrCtrl+Shift+T"))?;
+
+    // Edit Mode — opens the split editor/preview view; disabled until a file is
+    // open (sync_doc_menu) and unchecked by default (view mode is the default).
+    let edit_toggle = CheckMenuItem::with_id(app, "edit-mode", "Edit Mode", false, false, Some("CmdOrCtrl+E"))?;
 
     #[cfg(target_os = "macos")]
     {
@@ -309,6 +333,7 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
         let view_menu = Submenu::with_items(app, "View", true, &[
             &PredefinedMenuItem::fullscreen(app, None)?,
             &sep()?,
+            &edit_toggle,
             &toc_toggle,
             &sep()?,
             &theme_sub,
@@ -332,7 +357,7 @@ fn build_menu<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
 
     #[cfg(not(target_os = "macos"))]
     {
-        let view_menu = Submenu::with_items(app, "View", true, &[&toc_toggle, &sep()?, &theme_sub])?;
+        let view_menu = Submenu::with_items(app, "View", true, &[&edit_toggle, &toc_toggle, &sep()?, &theme_sub])?;
         app.set_menu(Menu::with_items(app, &[&file_menu, &edit_menu, &go_menu, &view_menu])?)?;
     }
 

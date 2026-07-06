@@ -16,7 +16,9 @@ This file tracks features that are not yet implemented, open design questions, a
 8. [Deferred Scope](#deferred-scope)
 9. [macOS Proxy Icon](#macos-proxy-icon)
 
-> Live-reload debouncing and scroll-position preservation were previously tracked here and are now **implemented** — see [architecture.md → File Watching](architecture.md#file-watching) and [product-summary.md → Live Reload](product-summary.md#live-reload).
+> **Recently shipped (moved out of this backlog):**
+> - Live-reload debouncing and scroll-position preservation — see [architecture.md → File Watching](architecture.md#file-watching) and [product-summary.md → Live Reload](product-summary.md#live-reload).
+> - **Editor Pane and Split View** (with live preview, scroll sync, explicit Save and Save As…) — see [architecture.md → Editor and Split View](architecture.md#editor-and-split-view) and [product-summary.md → Editing (Split View)](product-summary.md#editing-split-view). This also delivered the first full-file write IPC (`write_file` / `write_file_as`), so the generic file-write path referenced by other backlog items now exists.
 
 ---
 
@@ -108,7 +110,7 @@ A fixed bar at the bottom of the window shows the open file's size and last modi
 Add a `#status-bar` element to `index.html`, shown only when a file is open. Query file stats from Rust on every file load and reload:
 
 ```rust
-// app/src/commands.rs — new command
+// app/src/commands/file.rs — new command
 #[tauri::command]
 pub fn get_file_stats(path: String) -> Result<FileStats, String> {
     let canonical = canonical_markdown_path(&path)?;
@@ -212,8 +214,7 @@ Features not yet started, ordered by priority.
 | Export Individual Diagrams | Right-click → Save as PNG/SVG; PNG at 2× density; shares rasterization code with Copy Diagram feature |
 | Folder Sidebar | File tree filtered to `.md`; clicking opens file; sidebar state persisted; folder watcher; design content area with left panel slot from early on |
 | Remote URL Preview | File → Open URL…; fetches raw markdown from `https://`; read-only; no file watching; Save Local Copy option; HTML sanitizer non-overrideable |
-| Editor Pane and Split View | CodeMirror 6 left, preview right; debounced live re-render; scroll sync; Cmd+S saves; file-write IPC must handle arbitrary content |
-| Paste Image from Clipboard | Requires Editor Pane; saves to `./assets/<name-timestamp>.png`; inserts markdown link at cursor; undo reverts text insertion |
+| Paste Image from Clipboard | **Unblocked** by the shipped editor pane; saves to `./assets/<name-timestamp>.png`; inserts markdown link at cursor; undo reverts text insertion |
 | Diagram Inspector | Click flowchart/sequence node → popover shows source definition line; read-only; uses Mermaid SVG `id` attributes for node mapping |
 | Mermaid Live-edit Popover | Click diagram → editable popover with real-time preview; save writes back to file (replaces full ` ```mermaid ``` ` block) via `write_range` IPC variant |
 | Presentation Mode | `---` dividers as slide boundaries; full-screen; arrow keys/space to advance; Escape to exit; slide counter; ⚠ `Cmd+Shift+P` shortcut conflicts with VS Code — must be reassigned |
@@ -274,7 +275,7 @@ Items explicitly removed from the v1 and v2 roadmap. Revisit only after the Plat
 
 Right-clicking the window title bar on macOS shows a breadcrumb path and a "Reveal in Finder" option. This requires calling `window.set_represented_filename(path)` after `set_window_title`.
 
-**How to implement** in `app/src/commands.rs`:
+**How to implement** in `app/src/commands/system.rs` (alongside the existing `set_window_title`):
 
 ```rust
 #[tauri::command]
