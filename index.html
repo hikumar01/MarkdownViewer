@@ -29,14 +29,21 @@
         <button id="search-close" class="search-btn" title="Close (Escape)">✕</button>
       </div>
 
-      <!-- Visibility is class-based (#app.has-file), not the hidden attribute —
-           see the class-based UI-toggle ADR. .markdown-body activates github-markdown-css -->
-      <main id="content" class="markdown-body"></main>
+      <!-- #panes holds the editor (left, edit mode only) and the preview/welcome.
+           Visibility is class-based (#app.has-file / #app.edit-mode), not the
+           hidden attribute — see the class-based UI-toggle ADR. -->
+      <div id="panes">
+        <!-- CodeMirror mounts here; shown only in edit mode. -->
+        <div id="editor"></div>
 
-      <div id="welcome">
-        <h1>Markdown Viewer</h1>
-        <p>Open a markdown file to preview it</p>
-        <p class="hint">File → Open File…</p>
+        <!-- .markdown-body activates github-markdown-css -->
+        <main id="content" class="markdown-body"></main>
+
+        <div id="welcome">
+          <h1>Markdown Viewer</h1>
+          <p>Open a markdown file to preview it</p>
+          <p class="hint">File → Open File…</p>
+        </div>
       </div>
     </div>
   </body>

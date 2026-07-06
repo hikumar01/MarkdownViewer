@@ -10,6 +10,7 @@ A fast, offline-first desktop Markdown viewer for local documentation, diagrams,
 - Local image rendering via `markdownviewer://` custom protocol; remote image and font loads are blocked by CSP
 - File → Open File… (`Cmd+O`), drag-and-drop, Finder double-click, deep links (`markdownviewer:///path`)
 - File → Open Recent — last 10 files, persisted across restarts
+- Optional split editor/preview (View → Edit Mode, `Cmd+E`) with live preview, scroll sync, and explicit **Save** (`Cmd+S`) / **Save As…** (`Cmd+Shift+S`)
 - Live reload when the file changes on disk (FSEvents / ReadDirectoryChangesW)
 - Back/Forward navigation history (`Cmd+[` / `Cmd+]`); relative `.md` link following
 - Floating Table of Contents with scroll-spy (`Cmd+Shift+T`)
@@ -95,7 +96,7 @@ cd app && cargo clippy --all-targets -- -D warnings && cargo test
 
 Test layout:
 - TypeScript tests live in [ui/__tests__/](ui/__tests__/) (one `*.test.ts` per source file). Tauri APIs (`@tauri-apps/api/core`, `event`, `plugin-dialog`) are stubbed via aliases in [vitest.config.ts](vitest.config.ts) so tests never need a running Tauri runtime. Node 25's incomplete built-in `localStorage` is replaced with a spec-compliant in-memory `Storage` by [ui/__tests__/setup.ts](ui/__tests__/setup.ts). Most tests run under happy-dom; `purify.test.ts` is pinned to `jsdom` (via a `@vitest-environment jsdom` docblock) because happy-dom does not faithfully implement the DOM parsing/serialization APIs DOMPurify relies on.
-- Rust tests live alongside source as `#[cfg(test)] mod tests` blocks in [app/src/protocol.rs](app/src/protocol.rs), [app/src/commands.rs](app/src/commands.rs), and [app/src/main.rs](app/src/main.rs). `tempfile` is used as a dev-dependency for filesystem fixtures.
+- Rust tests live alongside source as `#[cfg(test)] mod tests` blocks in [app/src/protocol.rs](app/src/protocol.rs), the command modules under [app/src/commands/](app/src/commands/) (`file.rs`, `menu.rs`), and [app/src/main.rs](app/src/main.rs). `tempfile` is used as a dev-dependency for filesystem fixtures.
 
 ## Building
 

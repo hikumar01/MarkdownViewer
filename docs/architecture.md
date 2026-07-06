@@ -19,6 +19,7 @@ For mid-level engineers contributing to or evaluating the codebase. Covers the s
    - [Product Scope (v1)](#product-scope-v1)
    - [Cross-platform Strategy](#cross-platform-strategy)
    - [File-write IPC Design](#file-write-ipc-design)
+   - [Editor and Split View](#editor-and-split-view)
    - [Class-based UI Toggle Pattern](#class-based-ui-toggle-pattern)
    - [Async Menu Commands](#async-menu-commands)
 6. [Rendering Pipeline](#rendering-pipeline)
@@ -46,13 +47,14 @@ flowchart TB
             direction TB
             main["main.ts — bootstrap · history · events"]
             renderer["renderer/ — unified pipeline · Mermaid · Shiki"]
+            editor["editor/ — CodeMirror split-view editor"]
             ev["events/ — theme · links · drag-drop · toc · search · recent"]
             css["styles/app.css — tokens · layouts · states"]
         end
         subgraph BE["Rust Backend · Tauri v2"]
             direction TB
             mainrs["main.rs — app setup · menus · routing"]
-            cmds["commands.rs — IPC command handlers"]
+            cmds["commands/ — file · menu · system handlers"]
             proto["protocol.rs — markdownviewer:// serving"]
         end
         FE <-->|"Tauri IPC — invoke / emit — capability-gated"| BE
@@ -60,7 +62,7 @@ flowchart TB
 
     subgraph OS["Native Platform"]
         direction LR
-        fs["Filesystem — read · watch"]
+        fs["Filesystem — read · write · watch"]
         fw["File Watcher — FSEvents / ReadDirChanges"]
         svc["OS Services — menus · URL scheme · open crate"]
     end
@@ -84,7 +86,9 @@ flowchart TB
 | `ui/main.ts` | App bootstrap and event wiring — `loadFile`/`reloadCurrentFile` lifecycle, debounced auto-reload + scroll preservation. Delegates state to `appState.ts`, history to `history.ts`, and element access to `dom.ts` |
 | `ui/appState.ts` | `AppState` — single owner of the mutable session state (open file path, navigation-in-progress guard, `NavigationHistory` instance) |
 | `ui/history.ts` | `NavigationHistory` — the pure back/forward stack (push/back/forward/reset + `canBack`/`canForward`); no DOM or IPC dependencies, unit-tested in isolation |
-| `ui/dom.ts` | Cached top-level element refs (`getElements`) + class-based document/welcome toggle (`showDocument`/`showWelcomeView` via `#app.has-file`) |
+| `ui/dom.ts` | Cached top-level element refs (`getElements`) + class-based document/welcome toggle (`showDocument`/`showWelcomeView` via `#app.has-file`) and split-editor layout toggle (`setEditLayout` via `#app.edit-mode`) |
+| `ui/preview.ts` | `renderPreview(content, basePath)` — the shared render-into-`#content` path (unified → sanitize → Mermaid → copy buttons → TOC/search) with a stale-token guard; used by both file load and live editing |
+| `ui/editor/editor.ts` | `MarkdownEditor` — CodeMirror 6 wrapper (markdown language, light/dark via a `Compartment`); small text-in/text-out surface for the split editor |
 | `ui/settings.ts` | Typed façade over `localStorage` — the single source of truth for every persisted key (theme, TOC, recents, restore paths, enabled bundles) with validation + defaults |
 | `ui/debounce.ts` | Generic trailing-edge `debounce(fn, ms)` with a `cancel()` handle |
 | `ui/events/images.ts` | `attachImageHandlers` — wraps rendered `<img>`s for load/error styling and broken-image placeholders |
@@ -124,7 +128,7 @@ Full rationale for each decision is in the [Technology Decisions](#technology-de
 | Code highlighting | Shiki — VS Code token accuracy; dual-theme CSS variables; no FOUC | [Syntax Highlighter](#syntax-highlighter-shiki) |
 | Diagram engine | Mermaid v11+ — pure JS; async SVG; widest diagram type coverage | [Diagram Renderer](#diagram-renderer-mermaidjs) |
 | Plugin bundles | Grouped by syntactic domain (R1–R4) — not individual feature toggles | [Plugin Bundle Architecture](#plugin-bundle-architecture) |
-| Product scope | Viewer-only, single file, offline for v1 | [Product Scope](#product-scope-v1) |
+| Product scope | Single file, offline; view-first with an opt-in editor (supersedes viewer-only) | [Product Scope](#product-scope-v1) · [Editor and Split View](#editor-and-split-view) |
 | Cross-platform | Cross-platform baseline required; platform enhancements are additive | [Cross-platform Strategy](#cross-platform-strategy) |
 | File-write IPC | Typed Rust commands per operation; frontend owns reload suppression | [File-write IPC Design](#file-write-ipc-design) |
 | Local file protocol | Custom `markdownviewer://` URI scheme via `register_uri_scheme_protocol()` | [Security Model](#security-model) |
@@ -137,7 +141,7 @@ Full rationale for each decision is in the [Technology Decisions](#technology-de
 
 ## Runtime Surface and Capabilities
 
-The current app deliberately keeps the frontend permission surface small. File reads, file watching, native file-open dialogs, outbound URL launching, recent-menu rebuilding, and title/menu updates are all exposed as typed Rust commands in `app/src/commands.rs`; the WebView does not receive broad filesystem or shell plugin permissions.
+The current app deliberately keeps the frontend permission surface small. File reads and writes, file watching, native file-open/save dialogs, outbound URL launching, recent-menu rebuilding, and title/menu updates are all exposed as typed Rust commands under `app/src/commands/` (`file.rs`, `menu.rs`, `system.rs`); the WebView does not receive broad filesystem or shell plugin permissions.
 
 ### Current Rust Dependencies and Tauri Plugins
 
@@ -564,7 +568,7 @@ Multiple editor- and server-adjacent features were raised during planning: a spl
 
 | Constraint | Decision | Rationale |
 |---|---|---|
-| Viewer-only | No editor pane or split view | Adds CodeMirror, scroll sync, debounced save, undo — doubles the UI surface area. The core value does not require editing. |
+| ~~Viewer-only~~ | ~~No editor pane or split view~~ **Superseded** — see [Editor and Split View](#editor-and-split-view) | Originally deferred; a split CodeMirror editor with explicit save was subsequently added. The default remains view-only. |
 | Single file | No folder sidebar or file browser | Folder watch, tree UI, file sorting are a separate product concern. Single-file works for the primary use case. |
 | Offline-first | No remote URL preview | Remote fetching requires network permissions, CORS handling, auth, and an error model for flaky connections. |
 | Export last | Export to PDF/HTML is future scope | Export quality requires polishing print styles and testing across document types. Must not block core viewer features. |
@@ -591,7 +595,7 @@ The app is typically opened alongside an editor. It should never show a spinner 
 - Architecture decisions must not *prevent* editor/folder/remote features from being added in v2, but v1 does not implement them
 - Export items are documented as future scope — keep the renderer HTML clean for export; keep `@media print` styles in mind
 
-**Ruled out for v1:** editor pane / split view, folder sidebar, remote URL preview, PlantUML / Graphviz / D2 rendering
+**Ruled out for v1:** ~~editor pane / split view~~ (later added — see [Editor and Split View](#editor-and-split-view)), folder sidebar, remote URL preview, PlantUML / Graphviz / D2 rendering
 
 ---
 
@@ -658,13 +662,9 @@ Quick Look does not violate this rule because it is explicitly macOS-exclusive w
 
 #### Context
 
-Markdown Viewer is currently read-only. The first planned write feature is task-list write-back: writing a single modified line back to the source `.md` file when the user clicks a task checkbox. Later write operations may include:
+This decision was written while the app was read-only, to establish a write pattern that could grow feature by feature. The first envisaged write was task-list write-back (writing a single modified line back when a task checkbox is clicked); other candidates included full-file editor save, Mermaid live-edit (replace a ` ```mermaid ` block), and paste-image (write an image file to disk). The design needed to handle the task-write-back case cleanly and extend without redesign.
 
-- Mermaid Live-edit: replace a multi-line ` ```mermaid ` block
-- Editor pane: save the full file on `Cmd+S`
-- Paste image: write an image file to disk
-
-A design is needed that handles the task write-back case cleanly and can be extended without redesign.
+The full-file save case has since shipped — see [Editor and Split View](#editor-and-split-view) — and validates the pattern: `write_file` (overwrite an existing `.md`) and `write_file_as` (Save As to a new path) are two independent typed commands, each with their own validation, exactly as anticipated below.
 
 #### Decision
 
@@ -707,7 +707,7 @@ async fn toggle_task(
 |---|---|---|
 | `toggle_task` | Single line replace | Task list write-back |
 | `write_range` | Line range replace | Mermaid block update |
-| `write_file` | Full file replace | Editor save |
+| `write_file` | Full file replace | Editor save — **implemented** (see [Editor and Split View](#editor-and-split-view)) |
 | `write_binary` | Write bytes to new path | Paste image |
 
 #### Rationale
@@ -731,6 +731,41 @@ Markdown files are small (typically < 1 MB). Reading the full file, modifying on
 - The frontend always sets `suppressNextReload` before any write command
 - Line numbers from the frontend are 1-indexed, matching remark's `position.start.line`
 - Future write operations extend this pattern — they do not replace it
+
+---
+
+### Editor and Split View
+
+**Date:** 2026-07-05 · **Status:** Accepted (supersedes the "Viewer-only" row of [Product Scope](#product-scope-v1))
+
+#### Context
+
+Product Scope (v1) deferred an editor pane. The app is now extended with optional editing: the default is still view-only, but the user can switch a document into a split editor/preview view, make changes, and save them back to disk.
+
+#### Decision
+
+- **Default is view mode.** Editing is opt-in via **View → Edit Mode** (`CmdOrCtrl+E`), a `CheckMenuItem` that is disabled until a document is open.
+- **Split view.** Edit mode shows a CodeMirror editor (left) and the live preview (right), driven by the `#app.edit-mode` class (class-based toggle ADR). The preview updates as you type via a debounced (`LIVE_PREVIEW_MS`) call to the shared `renderPreview` (`ui/preview.ts`).
+- **Editor: CodeMirror 6.** Markdown language mode + line numbers via `basicSetup`, with `EditorView.lineWrapping` so long prose wraps to the pane width instead of scrolling horizontally. The wrapper (`ui/editor/editor.ts`) exposes a minimal text-in/text-out surface so `main.ts` never imports CodeMirror internals.
+- **Editor honours the app theme.** The editor *chrome* (background, gutters, caret, selection, active line) is a static `EditorView.theme` driven by the app's CSS variables (`--bg`, `--text`, `--text-muted`, `--border`), so it blends with the surrounding UI and re-themes automatically when `html.dark` toggles. The *syntax* highlight theme is swapped per mode through a `Compartment` — `@codemirror/theme-one-dark` for dark (layered before the app theme so the app background still wins), CodeMirror's default light highlight style for light.
+- **Explicit save.** **File → Save** (`CmdOrCtrl+S`) writes via the typed `write_file` command; there is no auto-save. Unsaved changes are tracked as `dirty` (editor text ≠ last-saved `sourceText`) and surfaced as a leading `•` in the window title. Save is enabled only when dirty (`sync_edit_menu`).
+- **Save As.** **File → Save As…** (`CmdOrCtrl+Shift+S`) writes the current document to a user-chosen path via the native save dialog (`save_file_dialog`, defaulting to the current file's folder and name) and the typed `write_file_as` command, then *adopts* the new path as the open document (base path, watcher, recents, title, history). Enabled whenever a document is open (`sync_doc_menu`), not just when dirty.
+- **Delete-while-dirty recovery.** If the open file is deleted/moved externally while there are unsaved edits, the `file-deleted` handler offers **Save As…** instead of silently dropping the in-memory content to the welcome view.
+- **Unsaved-changes guard.** Discarding edits (leaving edit mode, opening/closing a file, Back/Forward) prompts a confirm dialog. External `file-changed` events are ignored while `editMode && dirty` so a background change can't clobber unsaved work.
+- **Save/reload coordination.** The frontend owns reload suppression (per the File-write IPC Design ADR): a save sets a short `suppressReloadUntil` window so the watcher event the write triggers doesn't bounce back through the reload path and reset the editor.
+- **Scroll sync.** Editor and preview scroll proportionally; each live re-render realigns the preview to the editor's position. While typing, the editor is the scroll authority: replacing `#content` resets its `scrollTop` and fires a `scroll` event, so preview→editor sync is suppressed by an in-flight-render **depth counter** (not a boolean). A counter is required because rapid typing overlaps renders — the first to finish must not lift the guard while a later render's `#content` reset is still pending, or that stray `scrollTop = 0` event would drag the editor to the top. The guard is released one animation frame after the render resolves so the reset's coalesced scroll event is still ignored.
+
+#### Rationale
+
+- **CodeMirror over a textarea:** markdown syntax highlighting and line numbers materially improve the editing experience; CodeMirror 6 is pure ESM, runs in the WebView, and needs no eval (compatible with the existing CSP — its injected `<style>` tags are covered by the already-present `style-src 'unsafe-inline'`).
+- **Explicit save over auto-save:** writing to a user's file is destructive; an explicit action plus a dirty indicator avoids surprising disk writes and keeps the watcher/reload interaction simple.
+- **Reusing `renderPreview`:** the initial load and live editing share one render path, so the edited preview is byte-for-byte what a fresh open would produce.
+
+#### Consequences
+
+- No new frontend capability is granted — saving goes through typed Rust commands. `write_file` overwrites an existing `.md` (it reuses `canonical_markdown_path`); `write_file_as` is the only path that *creates* a file, and it applies its own guards (markdown-only extension with a `.md` default, a canonicalized parent directory, and the shared 50 MB cap). The native save dialog runs Rust-side (like `open_file_dialog`), so `capabilities/default.json` still grants the dialog plugin only `confirm`/`message`.
+- CodeMirror adds a bundled dependency (`codemirror`, `@codemirror/state`, `@codemirror/lang-markdown`, `@codemirror/theme-one-dark` as direct deps; the remaining `@codemirror/*` core packages come in transitively via `basicSetup`).
+- Edit mode is per-session UI state (not persisted); reopening the app starts in view mode.
 
 ---
 
@@ -814,7 +849,7 @@ The custom sanitizer in `svgSanitize.ts` (`sanitizeSvgFragment`):
 
 ### Path validation
 
-Every file path from untrusted sources (argv, deep links, drag-drop, frontend IPC) passes through `safe_markdown_path` (Rust, `main.rs`) or `canonical_markdown_path` (Rust, `commands.rs`) before any filesystem operation:
+Every file path from untrusted sources (argv, deep links, drag-drop, frontend IPC) passes through `safe_markdown_path` (Rust, `main.rs`) or `canonical_markdown_path` (Rust, `commands/file.rs`) before any filesystem operation:
 
 1. `fs::canonicalize` — resolves symlinks and all `..` components at OS level; rejects non-existent paths
 2. `is_file()` check — rejects directories
@@ -867,7 +902,7 @@ The Tauri capability file (`app/capabilities/default.json`) explicitly grants on
 
 ### Hardening invariants for IPC commands
 
-The following invariants are enforced at every Rust boundary command and apply to any new command added to `commands.rs`:
+The following invariants are enforced at every Rust boundary command and apply to any new command added under `commands/`:
 
 - **Generic error messages** — never propagate raw `io::Error` strings (or any error containing absolute paths or OS-specific text) back to the frontend. The frontend gets a stable, user-safe message; debug detail stays in `eprintln!`/logs only.
 - **Outbound URL strings are filtered before reaching the OS launcher.** `open_url` rejects URLs longer than 2048 chars, any URL containing ASCII control characters or whitespace, any scheme other than `http(s)`, and credentialed authorities such as `https://user@example.com`. This blocks CRLF / argument-injection vectors and deceptive credential-injection URLs before they reach legacy registered URL handlers.
@@ -888,22 +923,26 @@ Triage of scanner/Dependabot alerts. Version floors are pinned in `package.json`
 
 ## IPC Command Reference
 
-All commands are defined in `app/src/commands.rs` and registered in `main.rs`.
+All commands are defined under `app/src/commands/` (`file.rs`, `menu.rs`, `system.rs`) and registered in `main.rs`.
 
 **Frontend → Rust (invoke):**
 
 | Command | Parameters | Purpose |
 |---|---|---|
 | `read_file` | `path: String` | Read markdown file; validates path, returns content |
+| `write_file` | `path: String, content: String` | Save editor content back to an existing `.md` file; same path/extension/size guards as `read_file`; never creates new files (see [File-write IPC Design](#file-write-ipc-design)) |
+| `write_file_as` | `path: String, content: String` | Save As target write; creates a new markdown file (missing extension defaults to `.md`), validating a canonicalized parent directory and the 50 MB cap; returns the canonical path |
 | `watch_file` | `path: String` | Start FSEvents/ReadDirChanges watcher; emits `file-changed` or `file-deleted` |
 | `unwatch_file` | — | Stop the current watcher |
 | `set_window_title` | `filename: String` | Update title bar (`filename — Markdown Viewer`, or just `Markdown Viewer` if empty) |
 | `sync_nav_menu` | `canBack: bool, canForward: bool` | Enable/disable Back/Forward menu items |
-| `sync_doc_menu` | `hasFile: bool` | Enable/disable document-dependent menu items such as Close and Find |
+| `sync_doc_menu` | `hasFile: bool` | Enable/disable document-dependent menu items (Close, Save As, Find, Edit Mode, Table of Contents) |
 | `sync_theme_menu` | `preference: String` | Sync View → Theme checkmarks on startup |
 | `sync_toc_menu` | `visible: bool` | Sync View → Table of Contents checkmark on startup and after each toggle |
+| `sync_edit_menu` | `editMode: bool, dirty: bool` | Sync View → Edit Mode checkmark and enable File → Save only when there are unsaved changes |
 | `sync_recent_menu` | `paths: Vec<String>, current: Option<String>` | Rebuild Open Recent submenu; **must be async** — see [Async Menu Commands](#async-menu-commands) |
 | `open_file_dialog` | `start_dir: Option<String>` | Open native file picker from Rust, filtered to Markdown files, returning a canonical path on selection |
+| `save_file_dialog` | `start_dir: Option<String>, default_name: Option<String>` | Open the native save dialog from Rust (Markdown filter, optional start directory and suggested name); returns the chosen path (may not exist yet) or `None` on cancel |
 | `get_pending_open` | — | Pop the file path queued during cold launch (before WebView ready); returns `Option<String>` |
 | `open_url` | `url: String` | Open a credential-free `http(s)://` URL in the system browser; rejects other schemes and unsafe characters |
 
@@ -916,6 +955,9 @@ All commands are defined in `app/src/commands.rs` and registered in `main.rs`.
 | `open-file` | `path: string` | Open a specific file from argv, deep link, Finder, or recent-file selection |
 | `menu-open-file` | — | File → Open File selected; frontend calls `open_file_dialog` with the current/last directory |
 | `close-file` | — | Close the current file |
+| `menu-save` | — | File → Save selected; frontend writes the editor content via `write_file` |
+| `menu-save-as` | — | File → Save As selected; frontend prompts via `save_file_dialog` then writes with `write_file_as` and adopts the new path |
+| `toggle-edit` | — | View → Edit Mode toggled; frontend enters/exits the split editor view |
 | `theme-set` | `'light' \| 'dark' \| 'system'` | Theme menu selection |
 | `nav-back` / `nav-forward` | — | Go menu Back/Forward |
 | `toc-toggle` | — | View → Table of Contents menu item clicked |
@@ -999,6 +1041,8 @@ The TOC panel (`#toc`) is created lazily and managed entirely in the frontend by
 **Scroll-spy:** `IntersectionObserver` watches each heading element with `rootMargin: '-10% 0px -85% 0px'`. This creates a narrow horizontal band near the top of the viewport. When a heading enters this zone, it is marked as the active TOC entry (only one active at a time). The observer is torn down and rebuilt on each `updateToc` call.
 
 **Toggle:** `toggleToc()` flips between `open` and `closed` in `localStorage['toc']` through the best-effort storage helper. Visibility is applied via `#toc.toc-visible { display: block }` — not the HTML `hidden` attribute. WKWebView's author stylesheet overrides the UA `[hidden] { display: none }` rule, making attribute-based hiding unreliable. The `#app.toc-open` class lets CSS adjust the document area so text does not sit under the floating panel.
+
+**No open document:** the TOC only applies to an open file. `initToc()` creates the panel hidden, and `clearToc()` (called on close) both empties and hides it, so the panel never lingers over the welcome screen. The **View → Table of Contents** menu item is likewise disabled (darkened) when no file is open — it is built disabled and enabled/disabled by `sync_doc_menu(hasFile)` alongside Close, Find, and Edit Mode. Once a file loads, `updateToc` applies the saved `open`/`closed` preference.
 
 **Menu sync:** `sync_toc_menu` is a sync Tauri command (safe because it calls `set_checked` on a single `CheckMenuItem` — a fast main-thread operation that does not require rebuilding the submenu tree).
 

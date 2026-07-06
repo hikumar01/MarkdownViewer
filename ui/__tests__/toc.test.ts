@@ -38,16 +38,18 @@ describe('isTocVisible', () => {
 })
 
 describe('initToc / toggleToc', () => {
-  it('creates the panel and applies the visible class by default', () => {
+  it('creates the panel but keeps it hidden until a document loads', () => {
+    // No file is open at init, so the panel is hidden regardless of the saved
+    // preference; updateToc applies the real visibility once a file is loaded.
     initToc()
     const panel = document.getElementById('toc')!
     expect(panel).not.toBeNull()
-    expect(panel.classList.contains('toc-visible')).toBe(true)
-    expect(document.getElementById('app')!.classList.contains('toc-open')).toBe(true)
+    expect(panel.classList.contains('toc-visible')).toBe(false)
+    expect(document.getElementById('app')!.classList.contains('toc-open')).toBe(false)
   })
 
-  it('hides the panel when initialised with stored "closed"', () => {
-    localStorage.setItem('toc', 'closed')
+  it('stays hidden at init even when the stored preference is "open"', () => {
+    localStorage.setItem('toc', 'open')
     initToc()
     const panel = document.getElementById('toc')!
     expect(panel.classList.contains('toc-visible')).toBe(false)
@@ -87,7 +89,23 @@ describe('updateToc / clearToc', () => {
     expect(Array.from(items).map(i => i.textContent?.trim())).toEqual(['Alpha', 'Beta', 'Gamma'])
   })
 
-  it('clears all TOC entries', () => {
+  it('reveals the panel per the saved preference once a document loads', () => {
+    localStorage.setItem('toc', 'open')
+    initToc()
+    // Hidden until a document is rendered...
+    expect(document.getElementById('toc')!.classList.contains('toc-visible')).toBe(false)
+
+    const content = document.createElement('div')
+    content.innerHTML = '<h1 id="a">A</h1>'
+    document.body.appendChild(content)
+    updateToc(content)
+    // ...then visible because the preference is "open".
+    expect(document.getElementById('toc')!.classList.contains('toc-visible')).toBe(true)
+    expect(document.getElementById('app')!.classList.contains('toc-open')).toBe(true)
+  })
+
+  it('clears all TOC entries and hides the panel', () => {
+    localStorage.setItem('toc', 'open')
     initToc()
     const content = document.createElement('div')
     content.innerHTML = '<h1 id="a">A</h1>'
@@ -97,5 +115,8 @@ describe('updateToc / clearToc', () => {
 
     clearToc()
     expect(document.querySelectorAll('#toc .toc-item').length).toBe(0)
+    // With no document, the panel must not linger on screen.
+    expect(document.getElementById('toc')!.classList.contains('toc-visible')).toBe(false)
+    expect(document.getElementById('app')!.classList.contains('toc-open')).toBe(false)
   })
 })
